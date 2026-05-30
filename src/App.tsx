@@ -1,15 +1,16 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+﻿import React, { useState, useEffect, useMemo, useRef } from "react";
 import { Play, Delete, Trash2, Volume2, Search, X, Mic, Square, ChevronRight } from "lucide-react";
 import { jsPDF } from "jspdf";
 import { categories as originalCategories, Pictogram } from "./data/categories";
 import { AacBoardGraph, buildBoardsFromCategories, cloneBoardGraph, isValidBoardGraph } from "./boards";
 import { PictogramCard, PictogramIcon } from "./components/PictogramCard";
+import { saveAudio, loadAudio, deleteAudio } from "./utils/audioDB";
+import { SessionEntry, ReportRange, hashPin, isHashedPin, getRangeLabel, filterEntriesByRange, deleteFilteredEntries } from "./utils/therapistUtils";
 
 type Favorite = {
 	id: string;
 	items: Pictogram[];
 	colorClass: string;
-	recordedAudioDataUrl?: string;
 };
 
 type ChildProfile = {
@@ -19,16 +20,17 @@ type ChildProfile = {
 	speechRate: number;
 };
 
-type SessionEntry = {
-	phrase: string;
-	timestamp: number;
+type SessionGroup = {
+	id: string;
+	start: number;
+	end: number;
+	entries: SessionEntry[];
 };
-
-type ReportRange = "today" | "7d" | "30d" | "all" | "custom";
 
 type UiMode = "calma" | "color";
 
 const THERAPIST_PIN_STORAGE_KEY = "therapist-pin";
+const SESSION_BREAK_MS = 45 * 60 * 1000;
 
 const defaultProfiles: ChildProfile[] = [
 	{ id: "perfil-1", name: "Ana", uiMode: "calma", speechRate: 0.8 }
@@ -87,6 +89,10 @@ function App() {
 	const [sentence, setSentence] = useState<Pictogram[]>([]);
 	const [isSentenceSpeaking, setIsSentenceSpeaking] = useState(false);
 	const [isTherapistMode, setIsTherapistMode] = useState(false);
+	const [pinStep, setPinStep] = useState<"idle" | "enter" | "new1" | "new2" | "change-current" | "change-new1" | "change-new2">("idle");
+	const [pinInput, setPinInput] = useState("");
+	const [pendingPin, setPendingPin] = useState("");
+	const [pinError, setPinError] = useState("");
 	const [showSavedNotice, setShowSavedNotice] = useState(false);
 	const [recordingFavoriteId, setRecordingFavoriteId] = useState<string | null>(null);
 	const [customWordInput, setCustomWordInput] = useState("");
@@ -97,8 +103,14 @@ function App() {
 	const [reportRange, setReportRange] = useState<ReportRange>("7d");
 	const [customRangeStart, setCustomRangeStart] = useState<string>("");
 	const [customRangeEnd, setCustomRangeEnd] = useState<string>("");
+	const [therapistName, setTherapistName] = useState<string>(() => localStorage.getItem("therapist-name") || "");
+	const [therapistLicense, setTherapistLicense] = useState<string>(() => localStorage.getItem("therapist-license") || "");
+	const [therapistNotes, setTherapistNotes] = useState<string>(() => localStorage.getItem("therapist-notes") || "");
+	const [sessionLogHydratedProfileId, setSessionLogHydratedProfileId] = useState<string | null>(null);
 
 	const [favorites, setFavorites] = useState<Favorite[]>([]);
+	// favoriteId → tiene grabación en IndexedDB
+	const [hasAudio, setHasAudio] = useState<Record<string, boolean>>({});
 	const mediaRecorderRef = useRef<MediaRecorder | null>(null);
 	const mediaStreamRef = useRef<MediaStream | null>(null);
 	const audioChunksRef = useRef<BlobPart[]>([]);
@@ -150,6 +162,7 @@ function App() {
 		const savedSessionLog = localStorage.getItem(`session-log:${activeProfile.id}`);
 		if (!savedSessionLog) {
 			setSessionLog([]);
+			setSessionLogHydratedProfileId(activeProfile.id);
 			return;
 		}
 		try {
@@ -160,8 +173,10 @@ function App() {
 						.map(item => ({ phrase: item.phrase, timestamp: item.timestamp }))
 				: [];
 			setSessionLog(normalized);
+			setSessionLogHydratedProfileId(activeProfile.id);
 		} catch {
 			setSessionLog([]);
+			setSessionLogHydratedProfileId(activeProfile.id);
 		}
 	}, [activeProfile, defaultBoardGraph]);
 
@@ -172,8 +187,21 @@ function App() {
 
 	useEffect(() => {
 		if (!activeProfile) return;
+		if (sessionLogHydratedProfileId !== activeProfile.id) return;
 		localStorage.setItem(`session-log:${activeProfile.id}`, JSON.stringify(sessionLog));
-	}, [activeProfile, sessionLog]);
+	}, [activeProfile, sessionLog, sessionLogHydratedProfileId]);
+
+	useEffect(() => {
+		localStorage.setItem("therapist-name", therapistName);
+	}, [therapistName]);
+
+	useEffect(() => {
+		localStorage.setItem("therapist-license", therapistLicense);
+	}, [therapistLicense]);
+
+	useEffect(() => {
+		localStorage.setItem("therapist-notes", therapistNotes);
+	}, [therapistNotes]);
 
 	useEffect(() => {
 		if (favorites.length === 0) return;
@@ -213,15 +241,17 @@ function App() {
 
 	const voiceNameFilter = /laura|pablo/i;
 	const femaleSpanishSpainHint = /female|mujer|femen|woman|girl|es-es|espa[ñn]a|spain|sabina|lucia|luc[íi]a|monica|m[óo]nica|sofia|sof[íi]a|paulina|helena|maria|mar[íi]a/i;
-	const curatedVoices = availableVoices.filter(voice => voiceNameFilter.test(`${voice.name} ${voice.voiceURI}`));
-	const extraFemaleEsEsVoice = availableVoices.find(voice => {
-		const descriptor = `${voice.name} ${voice.voiceURI}`;
-		const isSpanishSpain = voice.lang.toLowerCase().startsWith("es-es");
-		const looksFemale = femaleSpanishSpainHint.test(descriptor);
-		const notAlreadyIncluded = !curatedVoices.some(curated => curated.voiceURI === voice.voiceURI);
-		return isSpanishSpain && looksFemale && notAlreadyIncluded;
-	});
-	const limitedVoices = extraFemaleEsEsVoice ? [...curatedVoices, extraFemaleEsEsVoice] : curatedVoices;
+	const limitedVoices = useMemo(() => {
+		const curatedVoices = availableVoices.filter(voice => voiceNameFilter.test(`${voice.name} ${voice.voiceURI}`));
+		const extraFemaleEsEsVoice = availableVoices.find(voice => {
+			const descriptor = `${voice.name} ${voice.voiceURI}`;
+			const isSpanishSpain = voice.lang.toLowerCase().startsWith("es-es");
+			const looksFemale = femaleSpanishSpainHint.test(descriptor);
+			const notAlreadyIncluded = !curatedVoices.some(curated => curated.voiceURI === voice.voiceURI);
+			return isSpanishSpain && looksFemale && notAlreadyIncluded;
+		});
+		return extraFemaleEsEsVoice ? [...curatedVoices, extraFemaleEsEsVoice] : curatedVoices;
+	}, [availableVoices]);
 
 	useEffect(() => {
 		if (limitedVoices.length === 0) return;
@@ -232,7 +262,11 @@ function App() {
 	const persistFavorites = (updated: Favorite[]) => {
 		setFavorites(updated);
 		if (activeProfile) {
-			localStorage.setItem(`favorites:${activeProfile.id}`, JSON.stringify(updated));
+			try {
+				localStorage.setItem(`favorites:${activeProfile.id}`, JSON.stringify(updated));
+			} catch {
+				// localStorage lleno — los favoritos están en memoria de todas formas
+			}
 		}
 	};
 
@@ -304,6 +338,7 @@ function App() {
 		if (sentence.length === 0) return;
 		const phraseText = sentence.map(p => p.word).join(" ");
 		speak(phraseText, "sentence");
+		setSessionLogHydratedProfileId(activeProfile?.id ?? null);
 		setSessionLog(prev => [...prev, { phrase: phraseText, timestamp: Date.now() }]);
 	};
 
@@ -334,50 +369,44 @@ function App() {
 		setSentence([]);
 	};
 
-	const getRangeLabel = (range: ReportRange) => {
-		switch (range) {
-			case "today":
-				return "hoy";
-			case "7d":
-				return "últimos 7 días";
-			case "30d":
-				return "últimos 30 días";
-			case "custom":
-				return "rango personalizado";
-			default:
-				return "todo el histórico";
-		}
-	};
+	const filteredSessionLog = useMemo(() => filterEntriesByRange(sessionLog, reportRange, { customRangeStart, customRangeEnd }), [sessionLog, reportRange, customRangeStart, customRangeEnd]);
 
-	const getCustomRangeBounds = () => {
-		const start = customRangeStart ? new Date(`${customRangeStart}T00:00:00`).getTime() : Number.NEGATIVE_INFINITY;
-		const end = customRangeEnd ? new Date(`${customRangeEnd}T23:59:59.999`).getTime() : Number.POSITIVE_INFINITY;
-		return { start, end };
-	};
+	const sessionGroups = useMemo(() => {
+		if (filteredSessionLog.length === 0) return [] as SessionGroup[];
+		const sorted = [...filteredSessionLog].sort((a, b) => a.timestamp - b.timestamp);
+		const groups: SessionGroup[] = [];
+		let current: SessionEntry[] = [];
 
-	const filterEntriesByRange = (entries: SessionEntry[], range: ReportRange): SessionEntry[] => {
-		if (entries.length === 0) return entries;
-		const now = Date.now();
-		if (range === "all") return entries;
-		if (range === "today") {
-			const dayStart = new Date();
-			dayStart.setHours(0, 0, 0, 0);
-			const minTs = dayStart.getTime();
-			return entries.filter(entry => entry.timestamp >= minTs);
+		for (const entry of sorted) {
+			if (current.length === 0) {
+				current.push(entry);
+				continue;
+			}
+			const previous = current[current.length - 1];
+			if (entry.timestamp - previous.timestamp > SESSION_BREAK_MS) {
+				groups.push({
+					id: `session-${current[0].timestamp}`,
+					start: current[0].timestamp,
+					end: current[current.length - 1].timestamp,
+					entries: current,
+				});
+				current = [entry];
+			} else {
+				current.push(entry);
+			}
 		}
-		if (range === "7d") {
-			const minTs = now - 7 * 24 * 60 * 60 * 1000;
-			return entries.filter(entry => entry.timestamp >= minTs);
-		}
-		if (range === "30d") {
-			const minTs = now - 30 * 24 * 60 * 60 * 1000;
-			return entries.filter(entry => entry.timestamp >= minTs);
-		}
-		const { start, end } = getCustomRangeBounds();
-		return entries.filter(entry => entry.timestamp >= start && entry.timestamp <= end);
-	};
 
-	const filteredSessionLog = useMemo(() => filterEntriesByRange(sessionLog, reportRange), [sessionLog, reportRange, customRangeStart, customRangeEnd]);
+		if (current.length > 0) {
+			groups.push({
+				id: `session-${current[0].timestamp}`,
+				start: current[0].timestamp,
+				end: current[current.length - 1].timestamp,
+				entries: current,
+			});
+		}
+
+		return groups.reverse();
+	}, [filteredSessionLog]);
 
 	const phraseUsage = useMemo(() => {
 		const counts = new Map<string, number>();
@@ -420,7 +449,7 @@ function App() {
 
 	const profileVocabularyStats = useMemo(() => {
 		return profiles.map(profile => {
-			const log = filterEntriesByRange(getStoredSessionLog(profile.id), reportRange);
+			const log = filterEntriesByRange(getStoredSessionLog(profile.id), reportRange, { customRangeStart, customRangeEnd });
 			const words = new Set<string>();
 			for (const entry of log) {
 				const cleaned = entry.phrase
@@ -442,65 +471,198 @@ function App() {
 		});
 	}, [profiles, activeProfile?.id, sessionLog, reportRange, customRangeStart, customRangeEnd]);
 
-	const downloadSessionPdf = () => {
+	const calculatePhraseUsage = (entries: SessionEntry[]) => {
+		const counts = new Map<string, number>();
+		for (const entry of entries) {
+			const key = entry.phrase.trim();
+			if (!key) continue;
+			counts.set(key, (counts.get(key) ?? 0) + 1);
+		}
+		return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+	};
+
+	const calculateWordUsage = (entries: SessionEntry[]) => {
+		const counts = new Map<string, number>();
+		for (const entry of entries) {
+			const cleaned = entry.phrase
+				.toLowerCase()
+				.normalize("NFD")
+				.replace(/[\u0300-\u036f]/g, "")
+				.replace(/[^a-z0-9\s]/g, " ");
+			for (const token of cleaned.split(/\s+/)) {
+				if (!token || token.length < 2) continue;
+				counts.set(token, (counts.get(token) ?? 0) + 1);
+			}
+		}
+		return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+	};
+
+	const downloadSessionPdf = (entries: SessionEntry[] = filteredSessionLog, scopeLabel?: string, filenameSuffix?: string) => {
 		if (!activeProfile) return;
-		if (filteredSessionLog.length === 0) {
+		if (entries.length === 0) {
 			window.alert("No hay frases en el registro para exportar.");
 			return;
 		}
 
 		const now = new Date();
-		const weekday = new Intl.DateTimeFormat("es-ES", { weekday: "long" }).format(now);
 		const dateLabel = new Intl.DateTimeFormat("es-ES", { weekday: "long", day: "2-digit", month: "long", year: "numeric" }).format(now);
-		const topPhrases = phraseUsage.slice(0, 3).map(([phrase]) => phrase);
-		const topWords = wordUsage.slice(0, 8);
+		const generatedAt = new Intl.DateTimeFormat("es-ES", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }).format(now);
+		const localPhraseUsage = calculatePhraseUsage(entries);
+		const localWordUsage = calculateWordUsage(entries);
+		const topPhrases = localPhraseUsage.slice(0, 3).map(([phrase]) => phrase);
+		const topWords = localWordUsage.slice(0, 8);
+		const topSummary = topPhrases.length > 0 ? topPhrases.join(" / ") : "sin datos";
 
 		const doc = new jsPDF({ unit: "pt", format: "a4" });
+		const pageWidth = doc.internal.pageSize.getWidth();
+		const pageHeight = doc.internal.pageSize.getHeight();
+		const marginX = 40;
+		const contentWidth = pageWidth - marginX * 2;
+		const subtleBorder = [226, 232, 240] as const;
+		const bodyText = [15, 23, 42] as const;
+		const mutedText = [71, 85, 105] as const;
+
+		doc.setFillColor(29, 78, 216);
+		doc.rect(0, 0, pageWidth, 98, "F");
+
+		doc.setTextColor(255, 255, 255);
 		doc.setFont("helvetica", "bold");
-		doc.setFontSize(17);
-		doc.text("Reporte de sesion AAC", 40, 48);
-
+		doc.setFontSize(23);
+		doc.text("Mi Comunicador", marginX, 45);
 		doc.setFont("helvetica", "normal");
-		doc.setFontSize(11);
-		doc.text(`Perfil: ${activeProfile.name}`, 40, 72);
-		doc.text(`Fecha: ${dateLabel}`, 40, 90);
-		doc.text(`Rango: ${getRangeLabel(reportRange)}`, 40, 108);
-
 		doc.setFontSize(12);
-		const topSummary = topPhrases.length > 0 ? topPhrases.join(" / ") : "sin datos";
-		doc.text(`${activeProfile.name}, sesion del ${weekday}: comunico ${filteredSessionLog.length} frases.`, 40, 132);
-		doc.text(`Las 3 mas usadas fueron: ${topSummary}.`, 40, 150);
+		doc.text("Reporte clínico de sesión", marginX, 66);
+		doc.setFontSize(9.5);
+		doc.text(`Generado: ${generatedAt}`, marginX, 83);
 
+		doc.setFillColor(247, 249, 252);
+		doc.setDrawColor(...subtleBorder);
+		doc.roundedRect(marginX, 114, contentWidth, 100, 10, 10, "F");
+		doc.roundedRect(marginX, 114, contentWidth, 100, 10, 10, "S");
+		doc.setTextColor(...bodyText);
 		doc.setFont("helvetica", "bold");
-		doc.setFontSize(12);
-		doc.text("Top frases", 40, 184);
+		doc.setFontSize(11.5);
+		doc.text("Resumen de sesión", marginX + 14, 134);
+		doc.setDrawColor(29, 78, 216);
+		doc.line(marginX + 14, 142, marginX + 92, 142);
 		doc.setFont("helvetica", "normal");
+		doc.setFontSize(9.8);
+		doc.text(`Perfil: ${activeProfile.name}`, marginX + 14, 157);
+		doc.text(`Fecha: ${dateLabel}`, marginX + 14, 173);
+		const rangeText = `Rango: ${scopeLabel ?? getRangeLabel(reportRange)}`;
+		doc.text(rangeText, marginX + 14, 189);
+		doc.setFontSize(8.6);
+		doc.setTextColor(...mutedText);
+		const criteriaText = "Criterio de conteo: frases = pulsaciones de Hablar; frases unicas = textos exactos distintos; vocabulario activo = palabras normalizadas unicas.";
+		const criteriaLines = doc.splitTextToSize(criteriaText, contentWidth - 28);
+		doc.text(criteriaLines, marginX + 14, 201);
+
+		const cardTop = 228;
+		const cardGap = 12;
+		const cardWidth = (contentWidth - cardGap * 2) / 3;
+		const drawMetricCard = (index: number, title: string, value: string) => {
+			const x = marginX + index * (cardWidth + cardGap);
+			doc.setFillColor(250, 250, 250);
+			doc.setDrawColor(...subtleBorder);
+			doc.roundedRect(x, cardTop, cardWidth, 74, 8, 8, "F");
+			doc.roundedRect(x, cardTop, cardWidth, 74, 8, 8, "S");
+			doc.setDrawColor(37, 99, 235);
+			doc.line(x + 10, cardTop + 10, x + 44, cardTop + 10);
+			doc.setFont("helvetica", "bold");
+			doc.setFontSize(9.2);
+			doc.setTextColor(...mutedText);
+			doc.text(title.toUpperCase(), x + 12, cardTop + 26);
+			doc.setFont("helvetica", "bold");
+			doc.setFontSize(20);
+			doc.setTextColor(...bodyText);
+			doc.text(value, x + 12, cardTop + 54);
+		};
+
+		drawMetricCard(0, "Frases", String(entries.length));
+		drawMetricCard(1, "Frases unicas", String(localPhraseUsage.length));
+		drawMetricCard(2, "Vocabulario activo", String(localWordUsage.length));
+
+		const summaryY = 322;
+		doc.setFont("helvetica", "bold");
 		doc.setFontSize(11);
-		let y = 204;
-		for (const [phrase, count] of phraseUsage.slice(0, 10)) {
-			doc.text(`- ${phrase} (${count})`, 48, y);
-			y += 16;
+		doc.setTextColor(...bodyText);
+		doc.text("Lectura clínica", marginX, summaryY);
+		doc.setFont("helvetica", "normal");
+		doc.setFontSize(10);
+		const summaryText = `${activeProfile.name} comunicó ${entries.length} frases en el período seleccionado. Las 3 más utilizadas fueron: ${topSummary}.`;
+		const summaryLines = doc.splitTextToSize(summaryText, contentWidth);
+		doc.text(summaryLines, marginX, summaryY + 18);
+
+		let nextY = summaryY + 18 + summaryLines.length * 13 + 18;
+		if (therapistNotes.trim()) {
+			doc.setFont("helvetica", "bold");
+			doc.setFontSize(11);
+			doc.setTextColor(...bodyText);
+			doc.text("Observaciones del logopeda", marginX, nextY);
+			doc.setFont("helvetica", "normal");
+			doc.setFontSize(10);
+			const notesLines = doc.splitTextToSize(therapistNotes.trim(), contentWidth);
+			doc.text(notesLines, marginX, nextY + 18);
+			nextY += 18 + notesLines.length * 13 + 14;
 		}
 
-		y += 8;
+		const sectionY = nextY;
+		doc.setDrawColor(...subtleBorder);
+		doc.line(marginX, sectionY, pageWidth - marginX, sectionY);
+
 		doc.setFont("helvetica", "bold");
-		doc.setFontSize(12);
-		doc.text("Vocabulario activo", 40, y);
-		y += 20;
-		doc.setFont("helvetica", "normal");
 		doc.setFontSize(11);
-		doc.text(`Palabras unicas en sesion: ${wordUsage.length}`, 48, y);
-		y += 18;
-		doc.text("Palabras mas usadas:", 48, y);
-		y += 16;
+		doc.setTextColor(...bodyText);
+		doc.text("Top frases", marginX, sectionY + 24);
+		doc.text("Palabras más usadas", pageWidth / 2 + 8, sectionY + 24);
+
+		doc.setFont("helvetica", "normal");
+		doc.setFontSize(10);
+		let leftY = sectionY + 46;
+		for (const [phrase, count] of localPhraseUsage.slice(0, 10)) {
+			const phraseLines = doc.splitTextToSize(`- ${phrase} (${count})`, contentWidth / 2 - 22);
+			doc.text(phraseLines, marginX, leftY);
+			leftY += phraseLines.length * 13;
+		}
+
+		let rightY = sectionY + 46;
 		for (const [word, count] of topWords) {
-			doc.text(`- ${word} (${count})`, 56, y);
-			y += 15;
+			doc.text(`- ${word} (${count})`, pageWidth / 2 + 8, rightY);
+			rightY += 14;
 		}
+
+		const listsBottomY = Math.max(leftY, rightY) + 12;
+		let signatureBlockTop: number;
+		if (listsBottomY + 150 > pageHeight) {
+			doc.addPage();
+			signatureBlockTop = 40;
+		} else {
+			signatureBlockTop = listsBottomY;
+		}
+		doc.setDrawColor(...subtleBorder);
+		doc.line(marginX, signatureBlockTop, pageWidth - marginX, signatureBlockTop);
+
+		doc.setFont("helvetica", "bold");
+		doc.setFontSize(11);
+		doc.setTextColor(...bodyText);
+		doc.text("Validación profesional", marginX, signatureBlockTop + 22);
+
+		doc.setFont("helvetica", "normal");
+		doc.setFontSize(9.8);
+		doc.text(`Logopeda: ${therapistName.trim() || "____________________________"}`, marginX, signatureBlockTop + 40);
+		doc.text(`Colegiado: ${therapistLicense.trim() || "____________________________"}`, marginX, signatureBlockTop + 56);
+		doc.text(`Fecha de firma: ${new Intl.DateTimeFormat("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" }).format(now)}`, pageWidth / 2 + 8, signatureBlockTop + 40);
+		doc.text("Firma", pageWidth / 2 + 8, signatureBlockTop + 56);
+		doc.line(pageWidth / 2 + 48, signatureBlockTop + 58, pageWidth - marginX, signatureBlockTop + 58);
+
+		doc.setFont("helvetica", "italic");
+		doc.setFontSize(8.8);
+		doc.setTextColor(100, 116, 139);
+		doc.text("Mi Comunicador - reporte generado automáticamente para seguimiento terapéutico.", marginX, pageHeight - 20);
 
 		const safeName = activeProfile.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "perfil";
 		const fileDate = now.toISOString().slice(0, 10);
-		doc.save(`reporte-sesion-${safeName}-${reportRange}-${fileDate}.pdf`);
+		doc.save(`reporte-sesion-${safeName}-${filenameSuffix ?? reportRange}-${fileDate}.pdf`);
 	};
 
 	const handleUiModeChange = (mode: UiMode) => {
@@ -527,25 +689,95 @@ function App() {
 
 	const openTherapistMode = () => {
 		const savedPin = localStorage.getItem(THERAPIST_PIN_STORAGE_KEY);
-		if (!savedPin) {
-			const firstPin = window.prompt("Crea un PIN para modo terapeuta (4 digitos):", "1234")?.trim();
-			if (!firstPin) return;
-			const confirmPin = window.prompt("Confirma el PIN:", "")?.trim();
-			if (!confirmPin || confirmPin !== firstPin) {
-				window.alert("El PIN no coincide. Intenta de nuevo.");
-				return;
-			}
-			localStorage.setItem(THERAPIST_PIN_STORAGE_KEY, firstPin);
+		setPinInput("");
+		setPinError("");
+		setPinStep(savedPin ? "enter" : "new1");
+	};
+
+	const handlePinSubmit = async () => {
+		const savedPin = localStorage.getItem(THERAPIST_PIN_STORAGE_KEY);
+		if (pinStep === "new1") {
+			if (pinInput.length < 4) { setPinError("El PIN debe tener al menos 4 caracteres."); return; }
+			setPendingPin(pinInput);
+			setPinInput("");
+			setPinError("");
+			setPinStep("new2");
+			return;
+		}
+		if (pinStep === "new2") {
+			if (pinInput !== pendingPin) { setPinError("Los PINs no coinciden. Intenta de nuevo."); setPinInput(""); return; }
+			localStorage.setItem(THERAPIST_PIN_STORAGE_KEY, await hashPin(pinInput));
+			setPinStep("idle");
+			setPinInput("");
+			setPendingPin("");
+			setPinError("");
 			setIsTherapistMode(true);
 			return;
 		}
-		const typedPin = window.prompt("Ingresa PIN terapeuta:", "")?.trim();
-		if (!typedPin) return;
-		if (typedPin !== savedPin) {
-			window.alert("PIN incorrecto.");
+		if (pinStep === "enter") {
+			if (!savedPin) return;
+			let matches = false;
+			if (isHashedPin(savedPin)) {
+				matches = (await hashPin(pinInput)) === savedPin;
+			} else {
+				// Migración: PIN antiguo en texto plano
+				matches = pinInput === savedPin;
+				if (matches) localStorage.setItem(THERAPIST_PIN_STORAGE_KEY, await hashPin(pinInput));
+			}
+			if (!matches) { setPinError("PIN incorrecto."); setPinInput(""); return; }
+			setPinStep("idle");
+			setPinInput("");
+			setPinError("");
+			setIsTherapistMode(true);
 			return;
 		}
-		setIsTherapistMode(true);
+		if (pinStep === "change-current") {
+			if (!savedPin) return;
+			let matches = false;
+			if (isHashedPin(savedPin)) {
+				matches = (await hashPin(pinInput)) === savedPin;
+			} else {
+				matches = pinInput === savedPin;
+			}
+			if (!matches) { setPinError("PIN actual incorrecto."); setPinInput(""); return; }
+			setPendingPin("");
+			setPinInput("");
+			setPinError("");
+			setPinStep("change-new1");
+			return;
+		}
+		if (pinStep === "change-new1") {
+			if (pinInput.length < 4) { setPinError("El PIN debe tener al menos 4 caracteres."); return; }
+			setPendingPin(pinInput);
+			setPinInput("");
+			setPinError("");
+			setPinStep("change-new2");
+			return;
+		}
+		if (pinStep === "change-new2") {
+			if (pinInput !== pendingPin) { setPinError("Los PINs no coinciden."); setPinInput(""); return; }
+			localStorage.setItem(THERAPIST_PIN_STORAGE_KEY, await hashPin(pinInput));
+			setPinStep("idle");
+			setPinInput("");
+			setPendingPin("");
+			setPinError("");
+			return;
+		}
+	};
+
+	const cancelPinFlow = () => {
+		setPinStep("idle");
+		setPinInput("");
+		setPendingPin("");
+		setPinError("");
+	};
+
+	const resetPin = () => {
+		if (!window.confirm("¿Restablecer el PIN? Se borrará el PIN actual y deberás crear uno nuevo.")) return;
+		localStorage.removeItem(THERAPIST_PIN_STORAGE_KEY);
+		setPinInput("");
+		setPinError("");
+		setPinStep("new1");
 	};
 
 	const toggleTherapistMode = () => {
@@ -725,14 +957,9 @@ function App() {
 			recorder.onstop = () => {
 				const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
 				if (blob.size > 0) {
-					const reader = new FileReader();
-					reader.onloadend = () => {
-						const dataUrl = typeof reader.result === "string" ? reader.result : "";
-						if (!dataUrl) return;
-						const updated = favorites.map(fav => fav.id === favoriteId ? { ...fav, recordedAudioDataUrl: dataUrl } : fav);
-						persistFavorites(updated);
-					};
-					reader.readAsDataURL(blob);
+					saveAudio(favoriteId, blob)
+						.then(() => setHasAudio(prev => ({ ...prev, [favoriteId]: true })))
+						.catch(() => window.alert("No se pudo guardar la grabación."));
 				}
 				if (mediaStreamRef.current) {
 					mediaStreamRef.current.getTracks().forEach(track => track.stop());
@@ -754,14 +981,33 @@ function App() {
 	const stopRecordingFavorite = () => stopRecorderAndRelease();
 
 	const playFavoriteRecording = (favoriteId: string) => {
-		const favorite = favorites.find(fav => fav.id === favoriteId);
-		if (!favorite?.recordedAudioDataUrl) {
-			window.alert("Esta frase aun no tiene grabacion.");
-			return;
-		}
-		const audio = new Audio(favorite.recordedAudioDataUrl);
-		audio.play().catch(() => window.alert("No se pudo reproducir la grabacion."));
+		loadAudio(favoriteId)
+			.then(blob => {
+				if (!blob) { window.alert("Esta frase aun no tiene grabacion."); return; }
+				const url = URL.createObjectURL(blob);
+				const audio = new Audio(url);
+				audio.onended = () => URL.revokeObjectURL(url);
+				audio.play().catch(() => window.alert("No se pudo reproducir la grabacion."));
+			})
+			.catch(() => window.alert("No se pudo cargar la grabacion."));
 	};
+
+	// Hidrata el mapa hasAudio cuando cambia la lista de favoritos
+	useEffect(() => {
+		if (favorites.length === 0) { setHasAudio({}); return; }
+		let cancelled = false;
+		Promise.all(
+			favorites.map(fav =>
+				loadAudio(fav.id).then(blob => ({ id: fav.id, has: blob !== null }))
+			)
+		).then(results => {
+			if (cancelled) return;
+			const map: Record<string, boolean> = {};
+			for (const r of results) map[r.id] = r.has;
+			setHasAudio(map);
+		}).catch(() => { /* IndexedDB no disponible, sin audio */ });
+		return () => { cancelled = true; };
+	}, [favorites]);
 
 	useEffect(() => {
 		return () => {
@@ -1003,7 +1249,7 @@ function App() {
 													{text}
 												</button>
 												<button
-													onClick={() => persistFavorites(favorites.filter(f => f.id !== fav.id))}
+													onClick={() => { deleteAudio(fav.id).catch(() => {}); persistFavorites(favorites.filter(f => f.id !== fav.id)); }}
 													className="rounded-xl border border-rose-300 bg-rose-100 p-2.5 text-rose-600 transition hover:bg-rose-200"
 													aria-label="Eliminar frase"
 												>
@@ -1023,14 +1269,14 @@ function App() {
 												) : (
 													<button
 														onClick={() => startRecordingFavorite(fav.id)}
-														className={`flex flex-1 items-center justify-center gap-2 rounded-xl border px-3 py-2.5 text-sm font-bold transition ${fav.recordedAudioDataUrl ? "border-cyan-300 bg-cyan-50 text-cyan-800 hover:bg-cyan-100" : "border-cyan-400 bg-cyan-100 text-cyan-900 hover:bg-cyan-200"}`}
+														className={`flex flex-1 items-center justify-center gap-2 rounded-xl border px-3 py-2.5 text-sm font-bold transition ${hasAudio[fav.id] ? "border-cyan-300 bg-cyan-50 text-cyan-800 hover:bg-cyan-100" : "border-cyan-400 bg-cyan-100 text-cyan-900 hover:bg-cyan-200"}`}
 													>
 														<Mic size={16} />
-														{fav.recordedAudioDataUrl ? "Volver a grabar" : "Grabar voz familiar"}
+														{hasAudio[fav.id] ? "Volver a grabar" : "Grabar voz familiar"}
 													</button>
 												)}
 
-												{fav.recordedAudioDataUrl && (
+												{hasAudio[fav.id] && (
 													<button
 														onClick={() => playFavoriteRecording(fav.id)}
 														className="flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-emerald-100 px-3 py-2.5 text-sm font-bold text-emerald-800 transition hover:bg-emerald-200"
@@ -1138,17 +1384,75 @@ function App() {
 						<section className="rounded-2xl border border-cyan-200 bg-cyan-50 p-3 sm:p-4">
 							<div className="mb-3 text-xs font-bold uppercase tracking-wide text-cyan-700">Modo terapeuta</div>
 							{isTherapistMode ? (
-								<div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
-									<span className="w-fit rounded-lg bg-cyan-200 px-2.5 py-1 text-xs font-black text-cyan-900">Activo</span>
-									<button onClick={() => setIsTherapistMode(false)} className="flex-1 rounded-xl border border-cyan-300 bg-white px-3 py-2 text-sm font-bold text-cyan-800 hover:bg-cyan-100 sm:flex-none">
-										Salir del modo terapeuta
-									</button>
+								<div className="flex flex-col gap-3">
+									<div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+										<span className="w-fit rounded-lg bg-cyan-200 px-2.5 py-1 text-xs font-black text-cyan-900">Activo</span>
+										<button onClick={() => setIsTherapistMode(false)} className="flex-1 rounded-xl border border-cyan-300 bg-white px-3 py-2 text-sm font-bold text-cyan-800 hover:bg-cyan-100 sm:flex-none">
+											Salir del modo terapeuta
+										</button>
+										{pinStep === "idle" && (
+											<button onClick={() => { setPinInput(""); setPinError(""); setPendingPin(""); setPinStep("change-current"); }} className="flex-none rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">
+												Cambiar PIN
+											</button>
+										)}
+									</div>
+									<div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+										<input
+											type="text"
+											value={therapistName}
+											onChange={e => setTherapistName(e.target.value)}
+											placeholder="Nombre del logopeda"
+											className="rounded-xl border border-cyan-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
+										/>
+										<input
+											type="text"
+											value={therapistLicense}
+											onChange={e => setTherapistLicense(e.target.value)}
+											placeholder="Nro colegiado"
+											className="rounded-xl border border-cyan-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
+										/>
+									</div>
+									<textarea
+										value={therapistNotes}
+										onChange={e => setTherapistNotes(e.target.value)}
+										placeholder="Observaciones clínicas (opcional, se incluye en el PDF)"
+										rows={3}
+										className="rounded-xl border border-cyan-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
+									/>
 								</div>
-							) : (
-								<button onClick={toggleTherapistMode} className="w-full rounded-xl border-2 border-cyan-300 bg-white px-4 py-3 text-sm font-bold text-cyan-800 transition hover:bg-cyan-50">
+						) : pinStep !== "idle" ? (
+							<div className="flex flex-col gap-2">
+								<p className="text-sm font-semibold text-cyan-800">
+									{pinStep === "enter" && "Ingresa tu PIN:"}
+									{pinStep === "new1" && "Crea un PIN (min. 4 caracteres):"}
+									{pinStep === "new2" && "Confirma el PIN:"}
+									{pinStep === "change-current" && "Ingresa el PIN actual:"}
+									{pinStep === "change-new1" && "Nuevo PIN (min. 4 caracteres):"}
+									{pinStep === "change-new2" && "Confirma el nuevo PIN:"}
+								</p>
+								<input
+									type="password"
+									value={pinInput}
+									autoFocus
+									onChange={e => { setPinInput(e.target.value); setPinError(""); }}
+									onKeyDown={e => e.key === "Enter" && void handlePinSubmit()}
+									placeholder="****"
+									className="rounded-xl border border-cyan-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
+								/>
+								{pinError && <p className="text-xs font-semibold text-rose-600">{pinError}</p>}
+								<div className="flex gap-2">
+									<button onClick={() => void handlePinSubmit()} className="flex-1 rounded-xl border-2 border-cyan-400 bg-cyan-400 px-4 py-2 text-sm font-bold text-white hover:bg-cyan-500">Confirmar</button>
+									<button onClick={cancelPinFlow} className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-600 hover:bg-slate-50">Cancelar</button>
+								</div>
+								{pinStep === "enter" && (
+									<button onClick={resetPin} className="text-xs font-semibold text-slate-400 underline hover:text-rose-600">Olvidaste el PIN? Restablecer</button>
+								)}
+							</div>
+						) : (
+							<button onClick={openTherapistMode} className="w-full rounded-xl border-2 border-cyan-300 bg-white px-4 py-3 text-sm font-bold text-cyan-800 transition hover:bg-cyan-50">
 									Entrar con PIN
-								</button>
-							)}
+							</button>
+						)}
 						</section>
 
 						{isTherapistMode && (
@@ -1156,9 +1460,18 @@ function App() {
 								<div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
 									<div className="text-xs font-bold uppercase tracking-wide text-slate-500">Registro de sesión</div>
 									<div className="flex gap-2">
-										<button onClick={downloadSessionPdf} disabled={filteredSessionLog.length === 0} className="rounded-lg border border-indigo-300 bg-indigo-100 px-2 py-1 text-xs font-bold text-indigo-800 hover:bg-indigo-200 disabled:cursor-not-allowed disabled:opacity-50">Descargar PDF</button>
-										{sessionLog.length > 0 && (
-											<button onClick={() => setSessionLog([])} className="rounded-lg border border-rose-300 bg-rose-100 px-2 py-1 text-xs font-bold text-rose-700 hover:bg-rose-200">Borrar todo</button>
+										<button onClick={() => downloadSessionPdf()} disabled={filteredSessionLog.length === 0} className="rounded-lg border border-indigo-300 bg-indigo-100 px-2 py-1 text-xs font-bold text-indigo-800 hover:bg-indigo-200 disabled:cursor-not-allowed disabled:opacity-50">Descargar PDF</button>
+										{filteredSessionLog.length > 0 && (
+											<button
+												onClick={() => {
+													const label = reportRange === "all" ? "TODO el historial" : `el período "${getRangeLabel(reportRange)}"`;
+													if (!window.confirm(`¿Borrar ${label}? Esta acción no se puede deshacer.`)) return;
+													setSessionLog(prev => deleteFilteredEntries(prev, filteredSessionLog));
+												}}
+												className="rounded-lg border border-rose-300 bg-rose-100 px-2 py-1 text-xs font-bold text-rose-700 hover:bg-rose-200"
+											>
+												{reportRange === "all" ? "Borrar todo" : "Borrar período"}
+											</button>
 										)}
 									</div>
 								</div>
@@ -1177,7 +1490,7 @@ function App() {
 								)}
 								<div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
 									<div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-										<div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Frases</div>
+										<div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Frases visibles</div>
 										<div className="text-lg font-black text-slate-800">{filteredSessionLog.length}</div>
 									</div>
 									<div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
@@ -1191,19 +1504,46 @@ function App() {
 								</div>
 								{phraseUsage.length > 0 && (
 									<p className="mb-3 rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2 text-sm font-semibold text-indigo-900">
-										{activeProfile?.name ?? "Perfil"}, período {getRangeLabel(reportRange)}: comunicó {filteredSessionLog.length} frases, las 3 más usadas fueron {phraseUsage.slice(0, 3).map(([phrase]) => phrase).join(" / ")}.
+										{activeProfile?.name ?? "Perfil"}, período {getRangeLabel(reportRange)}: comunicó {filteredSessionLog.length} frases para el reporte, las 3 más usadas fueron {phraseUsage.slice(0, 3).map(([phrase]) => phrase).join(" / ")}.
 									</p>
 								)}
-								{filteredSessionLog.length === 0 ? (
-									<p className="text-sm text-slate-400">No hay frases comunicadas en esta sesión.</p>
+								{sessionLog.length === 0 ? (
+									<p className="text-sm text-slate-400">No hay frases comunicadas todavía.</p>
+								) : filteredSessionLog.length === 0 ? (
+									<p className="text-sm text-slate-400">No hay frases en el período seleccionado.</p>
 								) : (
 									<div className="flex max-h-64 flex-col gap-2 overflow-y-auto">
-										{[...filteredSessionLog].reverse().map((entry, i) => (
-											<div key={i} className="flex items-start gap-2 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
-												<span className="mt-0.5 shrink-0 font-mono text-xs text-slate-400">{new Date(entry.timestamp).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
-												<span className="text-sm font-semibold text-slate-700">{entry.phrase}</span>
-											</div>
+										{[...filteredSessionLog].reverse().map((entry) => (
+										<div key={entry.timestamp} className="flex items-start gap-2 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
+										<span className="mt-0.5 shrink-0 font-mono text-xs text-slate-400">{new Date(entry.timestamp).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+										<span className="text-sm font-semibold text-slate-700">{entry.phrase}</span>
+										</div>
 										))}
+									</div>
+								)}
+								{sessionGroups.length > 0 && (
+									<div className="mt-4">
+										<div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">Exportar por sesión</div>
+										<div className="flex flex-col gap-2">
+											{sessionGroups.map((session, index) => {
+												const labelDate = new Intl.DateTimeFormat("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date(session.start));
+												const startTime = new Intl.DateTimeFormat("es-ES", { hour: "2-digit", minute: "2-digit" }).format(new Date(session.start));
+												const endTime = new Intl.DateTimeFormat("es-ES", { hour: "2-digit", minute: "2-digit" }).format(new Date(session.end));
+												const sessionLabel = `sesion-${sessionGroups.length - index}`;
+												return (
+													<div key={session.id} className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+														<div className="text-sm font-bold text-slate-700">Sesión {sessionGroups.length - index}</div>
+														<div className="text-xs font-semibold text-slate-500">{labelDate} · {startTime} - {endTime} · {session.entries.length} frases</div>
+														<button
+															onClick={() => downloadSessionPdf(session.entries, `sesión ${sessionGroups.length - index}`, sessionLabel)}
+															className="ml-auto rounded-lg border border-indigo-300 bg-indigo-100 px-2 py-1 text-xs font-bold text-indigo-800 hover:bg-indigo-200"
+														>
+															PDF sesión
+														</button>
+													</div>
+												);
+											})}
+										</div>
 									</div>
 								)}
 								<div className="mt-4">

@@ -1,11 +1,29 @@
 <!doctype html>
-<html lang="en">
+<html lang="es">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Comunicador Autismo (PWA)</title>
-    <link rel="manifest" href="/manifest.json">
-    <meta name="theme-color" content="#3b82f6">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Mi Comunicador</title>
+
+    <!-- PWA manifest -->
+    <link rel="manifest" href="/manifest.json" />
+
+    <!-- iOS: instalación desde Safari -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Comunicador" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
+    <!-- Android / Chrome -->
+    <meta name="theme-color" content="#3b82f6" />
+    <meta name="mobile-web-app-capable" content="yes" />
+
+    <!-- Windows / Edge -->
+    <meta name="msapplication-TileColor" content="#3b82f6" />
+    <meta name="msapplication-tap-highlight" content="no" />
+
+    <!-- Descripción para SEO y panel de instalación -->
+    <meta name="description" content="Aplicación de Comunicación Aumentativa y Alternativa para TEA" />
   </head>
   <body>
     <div id="root"></div>
