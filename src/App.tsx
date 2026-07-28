@@ -3,9 +3,31 @@ import { Play, Delete, Trash2, Volume2, Search, X, Mic, Square, ChevronRight } f
 import { jsPDF } from "jspdf";
 import { categories as originalCategories, Pictogram } from "./data/categories";
 import { AacBoardGraph, buildBoardsFromCategories, cloneBoardGraph, isValidBoardGraph } from "./boards";
+import { shouldCancelBeforeSpeak, pickSpanishVoice, buildUtterance, isIOSUserAgent } from "./utils/speakUtils";
 import { PictogramCard, PictogramIcon } from "./components/PictogramCard";
 import { saveAudio, loadAudio, deleteAudio } from "./utils/audioDB";
 import { SessionEntry, ReportRange, hashPin, isHashedPin, getRangeLabel, filterEntriesByRange, deleteFilteredEntries } from "./utils/therapistUtils";
+import {
+	cloudLogin,
+	cloudMe,
+	cloudRegister,
+	clearCloudSession,
+	getCloudSession,
+	getCloudToken,
+	isApiConfigured,
+	type CloudSession,
+} from "./utils/cloudApiClient";
+import {
+	captureSyncableStorageSnapshot,
+	applySyncableStorageSnapshot,
+	loadRemoteStorageSnapshot,
+	saveRemoteStorageSnapshot,
+	restoreRemoteRecordingsToLocal,
+	syncLocalRecordingsToRemote,
+	loadRemoteRecording,
+	upsertRemoteRecording,
+	deleteRemoteRecording,
+} from "./utils/cloudSync";
 
 type Favorite = {
 	id: string;
@@ -53,6 +75,22 @@ const randomColorClass = (mode: UiMode = "calma") => {
 				"bg-orange-100 border-orange-300 text-orange-900",
 			];
 	return colors[Math.floor(Math.random() * colors.length)];
+};
+
+const RECORDING_MIME_CANDIDATES = [
+	"audio/webm;codecs=opus",
+	"audio/webm",
+	"audio/mp4;codecs=mp4a.40.2",
+	"audio/mp4",
+	"audio/ogg;codecs=opus",
+	"audio/ogg",
+];
+
+const pickSupportedRecordingMimeType = (): string | undefined => {
+	if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") {
+		return undefined;
+	}
+	return RECORDING_MIME_CANDIDATES.find(type => MediaRecorder.isTypeSupported(type));
 };
 
 function App() {
@@ -107,6 +145,14 @@ function App() {
 	const [therapistLicense, setTherapistLicense] = useState<string>(() => localStorage.getItem("therapist-license") || "");
 	const [therapistNotes, setTherapistNotes] = useState<string>(() => localStorage.getItem("therapist-notes") || "");
 	const [sessionLogHydratedProfileId, setSessionLogHydratedProfileId] = useState<string | null>(null);
+	const [cloudSession, setCloudSession] = useState<CloudSession | null>(null);
+	const [cloudEmail, setCloudEmail] = useState<string>(() => localStorage.getItem("cloud-email") || "");
+	const [cloudEmailInput, setCloudEmailInput] = useState<string>(() => localStorage.getItem("cloud-email") || "");
+	const [cloudPasswordInput, setCloudPasswordInput] = useState<string>("");
+	const [isCloudRegisterMode, setIsCloudRegisterMode] = useState(false);
+	const [cloudStatus, setCloudStatus] = useState<string>("");
+	const [isCloudHydrating, setIsCloudHydrating] = useState(false);
+	const [isCloudSyncing, setIsCloudSyncing] = useState(false);
 
 	const [favorites, setFavorites] = useState<Favorite[]>([]);
 	// favoriteId → tiene grabación en IndexedDB
@@ -114,7 +160,8 @@ function App() {
 	const mediaRecorderRef = useRef<MediaRecorder | null>(null);
 	const mediaStreamRef = useRef<MediaStream | null>(null);
 	const audioChunksRef = useRef<BlobPart[]>([]);
-	const [voicesReady, setVoicesReady] = useState(false);
+	const ttsWarmupDoneRef = useRef(false);
+	const ttsColdStartDoneRef = useRef(false);
 	const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
 	const [preferredVoiceURI, setPreferredVoiceURI] = useState<string>(() => localStorage.getItem("preferred-voice-uri") || "");
 
@@ -224,14 +271,82 @@ function App() {
 		const syncVoices = () => {
 			const voices = synth.getVoices();
 			setAvailableVoices(voices);
-			setVoicesReady(voices.length > 0);
 		};
 		syncVoices();
+		// Android may not emit voiceschanged reliably on cold start.
+		// Poll briefly so the first tap can speak without waiting.
+		let pollCount = 0;
+		const pollId = window.setInterval(() => {
+			pollCount += 1;
+			const voices = synth.getVoices();
+			if (voices.length > 0 || pollCount >= 20) {
+				setAvailableVoices(voices);
+				window.clearInterval(pollId);
+			}
+		}, 100);
 		synth.addEventListener?.("voiceschanged", syncVoices);
 		synth.onvoiceschanged = syncVoices;
 		return () => {
+			window.clearInterval(pollId);
 			synth.removeEventListener?.("voiceschanged", syncVoices);
 			if (synth.onvoiceschanged === syncVoices) synth.onvoiceschanged = null;
+		};
+	}, []);
+
+	// iOS/Safari: unlock Web Audio and Speech Synthesis on first user gesture.
+	// iOS/Safari PWA: unlock Web Audio and Speech Synthesis on first user gesture.
+	// Without this, speechSynthesis.speak() is silently ignored on iOS PWA.
+	// NOTE: Do NOT pre-speak a silent utterance on Android Chrome — the capture listener
+	// fires before React's onClick, so the silent utterance gets cancel()ed immediately
+	// by speak(), triggering Chrome bug #334408 which permanently breaks the synth.
+	useEffect(() => {
+		const isIOS = isIOSUserAgent(navigator.userAgent);
+		const isAndroid = /Android/i.test(navigator.userAgent);
+		let unlocked = false;
+		const unlock = () => {
+			if (unlocked) return;
+			unlocked = true;
+			// Unlock AudioContext (all browsers — silent buffer)
+			try {
+				const AudioCtx = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+				if (AudioCtx) {
+					const ctx = new AudioCtx();
+					const buf = ctx.createBuffer(1, 1, 22050);
+					const src = ctx.createBufferSource();
+					src.buffer = buf;
+					src.connect(ctx.destination);
+					src.start(0);
+					void ctx.resume();
+				}
+			} catch { /* ignore */ }
+			// Unlock speechSynthesis with a silent utterance — iOS only.
+			// Android Chrome does not need this pre-unlock and it causes the cancel() bug.
+			if (isIOS && "speechSynthesis" in window) {
+				const silent = new SpeechSynthesisUtterance(" ");
+				silent.volume = 0;
+				window.speechSynthesis.speak(silent);
+			} else if (isAndroid && "speechSynthesis" in window && !ttsWarmupDoneRef.current) {
+				// Prime Android speech stack without enqueuing an utterance.
+				ttsWarmupDoneRef.current = true;
+				const synth = window.speechSynthesis;
+				try {
+					synth.getVoices();
+					synth.resume?.();
+					window.setTimeout(() => {
+						synth.getVoices();
+					}, 0);
+				} catch {
+					// ignore
+				}
+			}
+			document.removeEventListener("touchstart", unlock);
+			document.removeEventListener("click", unlock);
+		};
+		document.addEventListener("touchstart", unlock);
+		document.addEventListener("click", unlock);
+		return () => {
+			document.removeEventListener("touchstart", unlock);
+			document.removeEventListener("click", unlock);
 		};
 	}, []);
 
@@ -239,7 +354,82 @@ function App() {
 		localStorage.setItem("preferred-voice-uri", preferredVoiceURI);
 	}, [preferredVoiceURI]);
 
-	const voiceNameFilter = /laura|pablo/i;
+	useEffect(() => {
+		localStorage.setItem("cloud-email", cloudEmail);
+	}, [cloudEmail]);
+
+	useEffect(() => {
+		if (!isApiConfigured()) return;
+		const stored = getCloudSession();
+		if (!stored) return;
+		setCloudSession(stored);
+		setCloudEmail(stored.user.email);
+		setCloudEmailInput(stored.user.email);
+		void cloudMe()
+			.then(user => {
+				setCloudSession({ token: getCloudToken(), user });
+				setCloudEmail(user.email);
+				setCloudEmailInput(user.email);
+			})
+			.catch(() => {
+				clearCloudSession();
+				setCloudSession(null);
+				setCloudStatus("Tu sesión de nube expiró. Inicia sesión nuevamente.");
+			});
+	}, []);
+
+	useEffect(() => {
+		if (!cloudSession?.user || !isApiConfigured()) return;
+		let cancelled = false;
+		const hydrateCloud = async () => {
+			setIsCloudHydrating(true);
+			try {
+				const reloadMarker = `cloud-hydrated:${cloudSession.user.id}`;
+				if (window.sessionStorage.getItem(reloadMarker) === "1") {
+					setCloudStatus("Sesión en la nube activa.");
+					return;
+				}
+				const remoteSnapshot = await loadRemoteStorageSnapshot(cloudSession.user.id);
+				if (remoteSnapshot && Object.keys(remoteSnapshot).length > 0) {
+					applySyncableStorageSnapshot(remoteSnapshot);
+					await restoreRemoteRecordingsToLocal(cloudSession.user.id);
+					if (!cancelled) {
+						window.sessionStorage.setItem(reloadMarker, "1");
+						setCloudStatus("Datos sincronizados desde la nube.");
+						window.location.reload();
+					}
+					return;
+				}
+				const localSnapshot = captureSyncableStorageSnapshot();
+				await saveRemoteStorageSnapshot(cloudSession.user.id, localSnapshot);
+				await syncLocalRecordingsToRemote(cloudSession.user.id);
+				if (!cancelled) {
+					setCloudStatus("Espacio en la nube creado con los datos actuales.");
+				}
+			} catch {
+				if (!cancelled) setCloudStatus("No se pudo sincronizar con la API cloud.");
+			} finally {
+				if (!cancelled) setIsCloudHydrating(false);
+			}
+		};
+		void hydrateCloud();
+		return () => {
+			cancelled = true;
+		};
+	}, [cloudSession?.user.id]);
+
+	useEffect(() => {
+		if (!cloudSession?.user || !isApiConfigured() || isCloudHydrating) return;
+		const timeout = window.setTimeout(() => {
+			setIsCloudSyncing(true);
+			void saveRemoteStorageSnapshot(cloudSession.user.id, captureSyncableStorageSnapshot())
+				.catch(() => setCloudStatus("No se pudo actualizar la nube."))
+				.finally(() => setIsCloudSyncing(false));
+		}, 900);
+		return () => window.clearTimeout(timeout);
+	}, [cloudSession?.user.id, profiles, activeProfileId, boardGraph, favorites, sessionLog, therapistName, therapistLicense, therapistNotes, preferredVoiceURI, isCloudHydrating]);
+
+	const voiceNameFilter = /laura|pablo|helena/i;
 	const femaleSpanishSpainHint = /female|mujer|femen|woman|girl|es-es|espa[ñn]a|spain|sabina|lucia|luc[íi]a|monica|m[óo]nica|sofia|sof[íi]a|paulina|helena|maria|mar[íi]a/i;
 	const limitedVoices = useMemo(() => {
 		const curatedVoices = availableVoices.filter(voice => voiceNameFilter.test(`${voice.name} ${voice.voiceURI}`));
@@ -290,37 +480,69 @@ function App() {
 	const getFriendlySpanishVoice = () => {
 		if (!("speechSynthesis" in window)) return null;
 		const voices = limitedVoices.length > 0 ? limitedVoices : availableVoices.length > 0 ? availableVoices : window.speechSynthesis.getVoices();
-		if (!voices.length) return null;
-		if (preferredVoiceURI) {
-			const preferred = voices.find(voice => voice.voiceURI === preferredVoiceURI);
-			if (preferred) return preferred;
-		}
-		const spanishVoices = voices.filter(v => v.lang.toLowerCase().startsWith("es"));
-		return spanishVoices[0] ?? voices[0];
+		return pickSpanishVoice(voices, preferredVoiceURI);
 	};
 
 	const speak = (text: string, source: "sentence" | "single" = "single") => {
 		if (!("speechSynthesis" in window)) return;
-		window.speechSynthesis.cancel();
-		const utterance = new SpeechSynthesisUtterance(text);
-		const selectedVoice = getFriendlySpanishVoice();
-		if (selectedVoice) {
-			utterance.voice = selectedVoice;
-			utterance.lang = selectedVoice.lang;
-		} else {
-			utterance.lang = "es-ES";
-		}
-		utterance.rate = source === "sentence" ? speechRate : Math.min(speechRate + 0.08, 1);
-		utterance.pitch = 1.12;
-		utterance.volume = 1;
-		if (source === "sentence") setIsSentenceSpeaking(true);
-		utterance.onend = () => { if (source === "sentence") setIsSentenceSpeaking(false); };
-		utterance.onerror = () => { if (source === "sentence") setIsSentenceSpeaking(false); };
-		if (voicesReady) {
-			window.speechSynthesis.speak(utterance);
-		} else {
-			window.setTimeout(() => window.speechSynthesis.speak(utterance), 150);
-		}
+		const synth = window.speechSynthesis;
+		const isAndroid = /Android/i.test(navigator.userAgent);
+		const fallbackLang = (() => {
+			const rawLang = (navigator.language || "").trim();
+			if (!rawLang) return "es-MX";
+			return rawLang.toLowerCase().startsWith("es") ? rawLang : "es-MX";
+		})();
+		const speakOnce = (attempt = 0) => {
+			if (shouldCancelBeforeSpeak(synth)) {
+				synth.cancel();
+			}
+
+			const selectedVoice = getFriendlySpanishVoice();
+			const shouldUseAndroidFastPath =
+				isAndroid &&
+				source === "single" &&
+				!ttsColdStartDoneRef.current &&
+				attempt === 0;
+			const voiceForAttempt = shouldUseAndroidFastPath ? null : selectedVoice;
+			const utterance = buildUtterance(text, voiceForAttempt, {
+				rate: source === "sentence" ? speechRate : Math.min(speechRate + 0.08, 1),
+				pitch: 1.12,
+				volume: 1,
+				fallbackLang,
+				preserveBrowserDefaultLang: isAndroid && !voiceForAttempt,
+			});
+			if (source === "sentence") setIsSentenceSpeaking(true);
+			utterance.onstart = () => {
+				ttsColdStartDoneRef.current = true;
+			};
+			utterance.onend = () => { if (source === "sentence") setIsSentenceSpeaking(false); };
+			utterance.onerror = () => { if (source === "sentence") setIsSentenceSpeaking(false); };
+
+			try {
+				synth.resume?.();
+				synth.speak(utterance);
+			} catch {
+				if (source === "sentence") setIsSentenceSpeaking(false);
+				return;
+			}
+
+			// Some Android devices expose voices a bit later; retry immediately and shortly after
+			// so first audible speech happens with less perceived delay.
+			if ((attempt === 0 && !voiceForAttempt) || (attempt === 0 && shouldUseAndroidFastPath)) {
+				window.setTimeout(() => {
+					if (!synth.speaking && !synth.pending) {
+						speakOnce(1);
+					}
+				}, 0);
+				window.setTimeout(() => {
+					if (!synth.speaking && !synth.pending) {
+						speakOnce(2);
+					}
+				}, 60);
+			}
+		};
+
+		speakOnce();
 	};
 
 	const addToSentence = (pic: Pictogram) => {
@@ -694,6 +916,46 @@ function App() {
 		setPinStep(savedPin ? "enter" : "new1");
 	};
 
+	const signInWithCloud = async () => {
+		if (!isApiConfigured()) {
+			setCloudStatus("Configura VITE_API_BASE_URL para activar la nube.");
+			return;
+		}
+		const email = cloudEmailInput.trim();
+		const password = cloudPasswordInput.trim();
+		if (!email) {
+			setCloudStatus("Escribe un correo para iniciar sesión.");
+			return;
+		}
+		if (password.length < 6) {
+			setCloudStatus("La contraseña debe tener al menos 6 caracteres.");
+			return;
+		}
+		setCloudStatus(isCloudRegisterMode ? "Creando cuenta..." : "Iniciando sesión...");
+		try {
+			const session = isCloudRegisterMode
+				? await cloudRegister(email, password)
+				: await cloudLogin(email, password);
+			window.sessionStorage.removeItem(`cloud-hydrated:${session.user.id}`);
+			setCloudSession(session);
+			setCloudEmail(session.user.email);
+			setCloudEmailInput(session.user.email);
+			setCloudPasswordInput("");
+			setCloudStatus(isCloudRegisterMode ? "Cuenta creada y sesión iniciada." : "Sesión iniciada.");
+		} catch {
+			setCloudStatus(isCloudRegisterMode ? "No se pudo crear la cuenta." : "No se pudo iniciar sesión.");
+		}
+	};
+
+	const signOutCloud = async () => {
+		if (cloudSession?.user) {
+			window.sessionStorage.removeItem(`cloud-hydrated:${cloudSession.user.id}`);
+		}
+		clearCloudSession();
+		setCloudSession(null);
+		setCloudStatus("Sesión cerrada.");
+	};
+
 	const handlePinSubmit = async () => {
 		const savedPin = localStorage.getItem(THERAPIST_PIN_STORAGE_KEY);
 		if (pinStep === "new1") {
@@ -778,14 +1040,6 @@ function App() {
 		setPinInput("");
 		setPinError("");
 		setPinStep("new1");
-	};
-
-	const toggleTherapistMode = () => {
-		if (isTherapistMode) {
-			setIsTherapistMode(false);
-			return;
-		}
-		openTherapistMode();
 	};
 
 	const updateBoard = (boardId: string, updater: (graph: AacBoardGraph) => AacBoardGraph) => {
@@ -945,7 +1199,8 @@ function App() {
 			stopRecorderAndRelease();
 			const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 			mediaStreamRef.current = stream;
-			const recorder = new MediaRecorder(stream);
+			const mimeType = pickSupportedRecordingMimeType();
+			const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
 			mediaRecorderRef.current = recorder;
 			audioChunksRef.current = [];
 			setRecordingFavoriteId(favoriteId);
@@ -955,10 +1210,23 @@ function App() {
 			};
 
 			recorder.onstop = () => {
-				const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+				const chunkType = audioChunksRef.current.find(
+					(chunk): chunk is Blob => chunk instanceof Blob && Boolean(chunk.type)
+				)?.type;
+				const blobType = recorder.mimeType || chunkType || "audio/webm";
+				const blob = new Blob(audioChunksRef.current, { type: blobType });
 				if (blob.size > 0) {
 					saveAudio(favoriteId, blob)
 						.then(() => setHasAudio(prev => ({ ...prev, [favoriteId]: true })))
+						.then(async () => {
+							if (cloudSession?.user && activeProfile) {
+								try {
+									await upsertRemoteRecording(cloudSession.user.id, activeProfile.id, favoriteId, blob);
+								} catch {
+									// La copia local ya quedó guardada.
+								}
+							}
+						})
 						.catch(() => window.alert("No se pudo guardar la grabación."));
 				}
 				if (mediaStreamRef.current) {
@@ -983,10 +1251,32 @@ function App() {
 	const playFavoriteRecording = (favoriteId: string) => {
 		loadAudio(favoriteId)
 			.then(blob => {
-				if (!blob) { window.alert("Esta frase aun no tiene grabacion."); return; }
+				if (!blob) {
+					if (cloudSession?.user && activeProfile) {
+						void loadRemoteRecording(cloudSession.user.id, activeProfile.id, favoriteId)
+							.then(remoteBlob => {
+								if (!remoteBlob) { window.alert("Esta frase aun no tiene grabacion."); return; }
+								void saveAudio(favoriteId, remoteBlob).catch(() => {});
+								const remoteUrl = URL.createObjectURL(remoteBlob);
+								const remoteAudio = new Audio(remoteUrl);
+								remoteAudio.preload = "auto";
+								remoteAudio.setAttribute("playsinline", "true");
+								remoteAudio.onended = () => URL.revokeObjectURL(remoteUrl);
+								remoteAudio.onerror = () => URL.revokeObjectURL(remoteUrl);
+								remoteAudio.play().catch(() => window.alert("No se pudo reproducir la grabacion."));
+							})
+							.catch(() => window.alert("No se pudo cargar la grabacion."));
+						return;
+					}
+					window.alert("Esta frase aun no tiene grabacion.");
+					return;
+				}
 				const url = URL.createObjectURL(blob);
 				const audio = new Audio(url);
+				audio.preload = "auto";
+				audio.setAttribute("playsinline", "true");
 				audio.onended = () => URL.revokeObjectURL(url);
+				audio.onerror = () => URL.revokeObjectURL(url);
 				audio.play().catch(() => window.alert("No se pudo reproducir la grabacion."));
 			})
 			.catch(() => window.alert("No se pudo cargar la grabacion."));
@@ -1062,13 +1352,13 @@ function App() {
 	] as const;
 
 	return (
-		<div className={`min-h-screen flex flex-col text-slate-800 ${isCalm ? "bg-[linear-gradient(180deg,#f7fbff_0%,#f2f8ff_46%,#f8fbff_100%)]" : "bg-[linear-gradient(180deg,#fffaf5_0%,#fff5f0_44%,#f3f9ff_100%)]"}`}>
+		<div className={`min-h-[100dvh] flex flex-col overflow-x-hidden text-slate-800 ${isCalm ? "bg-[linear-gradient(180deg,#f7fbff_0%,#f2f8ff_46%,#f8fbff_100%)]" : "bg-[linear-gradient(180deg,#fffaf5_0%,#fff5f0_44%,#f3f9ff_100%)]"}`}>
 			<header className={`fixed left-0 right-0 top-0 z-30 flex h-14 items-center gap-3 border-b bg-white/95 px-4 shadow-sm backdrop-blur-sm ${isCalm ? "border-sky-100" : "border-orange-200"}`}>
 				<h1 className="text-lg font-black tracking-tight text-slate-900">Mi Comunicador</h1>
 				<div className="ml-auto rounded-xl bg-slate-100 px-2 py-1 text-xs font-bold text-slate-600">{activeProfile?.name ?? "Perfil"}</div>
 			</header>
 
-			<div className={`fixed left-0 right-0 top-14 z-20 flex h-12 items-center gap-2 overflow-x-auto border-b px-3 backdrop-blur-sm ${isCalm ? "border-rose-100 bg-rose-50/90" : "border-orange-100 bg-orange-50/90"}`}>
+			<div className={`fixed left-0 right-0 top-14 z-20 flex max-h-24 flex-wrap items-start gap-2 overflow-y-auto border-b px-3 py-2 backdrop-blur-sm md:h-12 md:flex-nowrap md:items-center md:overflow-x-auto md:overflow-y-hidden md:py-0 ${isCalm ? "border-rose-100 bg-rose-50/90" : "border-orange-100 bg-orange-50/90"}`}>
 				{urgencyItems.map(item => (
 					<button
 						key={item.id}
@@ -1086,7 +1376,7 @@ function App() {
 			<main className="flex-1 overflow-y-auto pt-[104px] pb-44">
 				{activeTab === "boards" && (
 					<div className="flex min-h-full flex-col md:flex-row">
-						<div className={`flex gap-2 overflow-x-auto border-b bg-white/90 p-3 md:w-72 md:flex-col md:overflow-y-auto md:border-b-0 md:border-r ${isCalm ? "border-sky-100" : "border-orange-200"}`}>
+						<div className={`grid grid-cols-2 gap-2 border-b bg-white/90 p-3 md:w-72 md:flex md:flex-col md:overflow-y-auto md:border-b-0 md:border-r ${isCalm ? "border-sky-100" : "border-orange-200"}`}>
 							{boardOrder.map(boardId => {
 								const board = boardsById[boardId];
 								if (!board) return null;
@@ -1147,7 +1437,7 @@ function App() {
 							<div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
 								{normalizedQuery
 									? visiblePictograms.map(pic => (
-											<PictogramCard key={pic.id} pictogram={pic} color={activeBoard.colorClass} onClick={addToSentence} />
+											<PictogramCard key={pic.id} pictogram={pic} color={activeBoard.colorClass} onClick={p => { addToSentence(p); speak(p.word); }} />
 										))
 									: activeBoard.cells.map(cell =>
 											cell.type === "speak" ? (
@@ -1155,7 +1445,7 @@ function App() {
 													<PictogramCard
 														pictogram={{ id: cell.id, word: cell.label, iconName: cell.iconName }}
 														color={activeBoard.colorClass}
-														onClick={() => addToSentence({ id: cell.id, word: cell.label, iconName: cell.iconName })}
+														onClick={() => { addToSentence({ id: cell.id, word: cell.label, iconName: cell.iconName }); speak(cell.label); }}
 													/>
 													<button
 														onClick={e => speakSingle(e, cell.label)}
@@ -1249,7 +1539,7 @@ function App() {
 													{text}
 												</button>
 												<button
-													onClick={() => { deleteAudio(fav.id).catch(() => {}); persistFavorites(favorites.filter(f => f.id !== fav.id)); }}
+													onClick={() => { deleteAudio(fav.id).catch(() => {}); if (cloudSession?.user && activeProfile) void deleteRemoteRecording(cloudSession.user.id, activeProfile.id, fav.id).catch(() => {}); persistFavorites(favorites.filter(f => f.id !== fav.id)); }}
 													className="rounded-xl border border-rose-300 bg-rose-100 p-2.5 text-rose-600 transition hover:bg-rose-200"
 													aria-label="Eliminar frase"
 												>
@@ -1335,6 +1625,51 @@ function App() {
 						</section>
 
 						<section className={`rounded-2xl border p-3 sm:p-4 ${isCalm ? "border-slate-200 bg-white" : "border-orange-200 bg-white"}`}>
+							<div className="mb-3 text-xs font-bold uppercase tracking-wide text-slate-500">Nube y acceso</div>
+							{!isApiConfigured() ? (
+								<p className="text-sm text-slate-500">Configura VITE_API_BASE_URL para sincronizar datos entre dispositivos.</p>
+							) : cloudSession ? (
+								<div className="flex flex-col gap-2">
+									<div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">
+										Conectado como {cloudSession.user.email || cloudEmail}
+									</div>
+									<button onClick={signOutCloud} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">
+										Cerrar sesión en la nube
+									</button>
+								</div>
+							) : (
+								<div className="flex flex-col gap-2">
+									<input
+										type="email"
+										value={cloudEmailInput}
+										onChange={e => setCloudEmailInput(e.target.value)}
+										placeholder="correo@ejemplo.com"
+										className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
+									/>
+									<input
+										type="password"
+										value={cloudPasswordInput}
+										onChange={e => setCloudPasswordInput(e.target.value)}
+										placeholder="Contraseña"
+										className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
+									/>
+									<button onClick={() => void signInWithCloud()} className="rounded-xl border-2 border-cyan-400 bg-cyan-400 px-3 py-2 text-sm font-bold text-white hover:bg-cyan-500">
+										{isCloudRegisterMode ? "Crear cuenta" : "Iniciar sesión"}
+									</button>
+									<button
+										onClick={() => setIsCloudRegisterMode(prev => !prev)}
+										className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50"
+									>
+										{isCloudRegisterMode ? "Ya tengo cuenta" : "Crear cuenta nueva"}
+									</button>
+								</div>
+							)}
+							<div className="mt-2 text-xs font-semibold text-slate-500">
+								{isCloudHydrating ? "Sincronizando datos..." : isCloudSyncing ? "Actualizando cambios..." : cloudStatus || "Tus datos se guardan en la nube cuando inicias sesión."}
+							</div>
+						</section>
+
+						<section className={`rounded-2xl border p-3 sm:p-4 ${isCalm ? "border-slate-200 bg-white" : "border-orange-200 bg-white"}`}>
 							<div className="mb-3 text-xs font-bold uppercase tracking-wide text-slate-500">Modo visual</div>
 							<div className="flex rounded-2xl border-2 border-slate-200 bg-white p-1 shadow-sm" role="group">
 								<button onClick={() => handleUiModeChange("calma")} className={`flex-1 rounded-xl px-3 py-2 text-sm font-bold transition ${isCalm ? "bg-sky-100 text-sky-800" : "text-slate-600 hover:bg-slate-100"}`}>Calma</button>
@@ -1377,7 +1712,7 @@ function App() {
 									))}
 								</select>
 							) : (
-								<p className="text-sm text-slate-500">No se encontraron voces Laura/Pablo ni una voz femenina es-ES.</p>
+								<p className="text-sm text-slate-500">No se encontraron voces Laura/Pablo/Helena ni una voz femenina es-ES.</p>
 							)}
 						</section>
 

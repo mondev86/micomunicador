@@ -8,7 +8,13 @@
 
 body {
 	min-height: 100vh;
+	overflow-x: hidden;
 	background: radial-gradient(circle at 10% 0%, #e5f2ff 0%, #f8fbff 55%, #f5f7fb 100%);
+}
+
+#root {
+	min-height: 100vh;
+	overflow-x: hidden;
 }
 
 button {

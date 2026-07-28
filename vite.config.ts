@@ -42,6 +42,12 @@ export default defineConfig({
   server: {
     // Permite enlaces de tuneles para pruebas en celular.
     allowedHosts: [".loca.lt", ".ngrok-free.dev"],
+    proxy: {
+      "/api": {
+        target: "http://127.0.0.1:8001",
+        changeOrigin: true,
+      },
+    },
   },
   resolve: {
     alias: {

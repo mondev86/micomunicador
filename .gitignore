@@ -3,6 +3,8 @@ node_modules/
 
 # build outputs
 dist/
+coverage/
+.nyc_output/
 
 # logs
 npm-debug.log*
@@ -20,5 +22,10 @@ pnpm-debug.log*
 Thumbs.db
 .vscode/
 .idea/
+
+# local runtime files
+*.log
+*.sqlite
+*.db
 
 snippet.txt
