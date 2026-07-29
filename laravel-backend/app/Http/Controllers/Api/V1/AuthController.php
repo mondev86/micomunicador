@@ -11,9 +11,32 @@ use Illuminate\Support\Facades\Validator;
 
 class AuthController extends Controller
 {
+    private function getRequestPayload(Request $request): array
+    {
+        $payload = $request->all();
+
+        if (!empty($payload)) {
+            return $payload;
+        }
+
+        $content = $request->getContent();
+        if (!is_string($content) || $content === '') {
+            return [];
+        }
+
+        $decoded = json_decode($content, true);
+        if (is_array($decoded)) {
+            return $decoded;
+        }
+
+        return [];
+    }
+
     public function register(Request $request): JsonResponse
     {
-        $validated = Validator::make($request->all(), [
+        $payload = $this->getRequestPayload($request);
+
+        $validated = Validator::make($payload, [
             'email' => ['required', 'email', 'max:255', 'unique:users,email'],
             'password' => ['required', 'string', 'min:6'],
         ])->validate();
@@ -36,7 +59,9 @@ class AuthController extends Controller
 
     public function login(Request $request): JsonResponse
     {
-        $validated = Validator::make($request->all(), [
+        $payload = $this->getRequestPayload($request);
+
+        $validated = Validator::make($payload, [
             'email' => ['required', 'email'],
             'password' => ['required', 'string'],
         ])->validate();

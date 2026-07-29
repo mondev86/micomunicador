@@ -25,6 +25,7 @@ export default defineConfig({
         // Estrategia: al activar el SW nuevo, toma el control inmediatamente
         skipWaiting: true,
         clientsClaim: true,
+        cleanupOutdatedCaches: true,
         runtimeCaching: [
           {
             // Fuentes de Google si se añaden en el futuro
@@ -41,7 +42,7 @@ export default defineConfig({
   ],
   server: {
     // Permite enlaces de tuneles para pruebas en celular.
-    allowedHosts: [".loca.lt", ".ngrok-free.dev"],
+    allowedHosts: [".loca.lt", ".ngrok-free.dev", ".devtunnels.ms", ".trycloudflare.com", ".pinggy.link"],
     proxy: {
       "/api": {
         target: "http://127.0.0.1:8001",

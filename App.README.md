@@ -55,6 +55,8 @@ Favoritos y audio:
 - favorites
 - recordingFavoriteId
 - mediaRecorderRef / mediaStreamRef / audioChunksRef
+- sincronizacion opcional con API MySQL por usuario
+- ruta SaaS recomendada: Laravel backend en carpeta laravel-backend/
 
 Seguridad y operacion:
 
@@ -88,8 +90,15 @@ Flujo D: grabar voz para favorito
 
 1. startRecordingFavorite solicita microfono
 2. MediaRecorder acumula chunks
-3. stop transforma a DataURL
-4. se guarda recordedAudioDataUrl en favorito
+3. stop transforma a Blob con mimeType soportado
+4. se guarda en IndexedDB local y, si hay sesion cloud, tambien en MySQL via API
+
+Flujo D2: acceder desde otro dispositivo
+
+1. el usuario inicia sesion con correo en Ajustes
+2. se recupera el snapshot remoto de localStorage
+3. se restauran las grabaciones desde la API/MySQL al almacenamiento local
+4. la app queda lista en el nuevo dispositivo con los mismos datos
 
 Flujo E: asignar foto real a celda (terapeuta)
 

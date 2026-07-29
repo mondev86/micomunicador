@@ -8,12 +8,14 @@ export type CloudSession = {
 	user: CloudUser;
 };
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || "";
+const API_BASE_URL = ((import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || "").replace(/\/$/, "");
 const TOKEN_STORAGE_KEY = "cloud-token";
 const USER_STORAGE_KEY = "cloud-user";
 
 export function isApiConfigured(): boolean {
-	return true;
+	if (API_BASE_URL) return true;
+	if (typeof window === "undefined") return false;
+	return window.location.protocol === "http:" || window.location.protocol === "https:";
 }
 
 export function getApiBaseUrl(): string {
@@ -48,6 +50,10 @@ export function clearCloudSession(): void {
 }
 
 async function requestJson<T>(path: string, init: RequestInit = {}, withAuth = false): Promise<T> {
+	if (!isApiConfigured()) {
+		throw new Error("API no configurada");
+	}
+
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
 		...(init.headers as Record<string, string> | undefined),
@@ -67,18 +73,26 @@ async function requestJson<T>(path: string, init: RequestInit = {}, withAuth = f
 }
 
 export async function cloudRegister(email: string, password: string): Promise<CloudSession> {
+	const body = new URLSearchParams({ email, password }).toString();
 	const data = await requestJson<CloudSession>("/api/auth/register", {
 		method: "POST",
-		body: JSON.stringify({ email, password }),
+		headers: {
+			"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+		},
+		body,
 	});
 	persistCloudSession(data);
 	return data;
 }
 
 export async function cloudLogin(email: string, password: string): Promise<CloudSession> {
+	const body = new URLSearchParams({ email, password }).toString();
 	const data = await requestJson<CloudSession>("/api/auth/login", {
 		method: "POST",
-		body: JSON.stringify({ email, password }),
+		headers: {
+			"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+		},
+		body,
 	});
 	persistCloudSession(data);
 	return data;

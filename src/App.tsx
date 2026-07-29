@@ -1,5 +1,5 @@
 ﻿import React, { useState, useEffect, useMemo, useRef } from "react";
-import { Play, Delete, Trash2, Volume2, Search, X, Mic, Square, ChevronRight } from "lucide-react";
+import { Play, Delete, Trash2, Volume2, Search, X, Mic, Square, ChevronRight, ChevronDown, ChevronUp } from "lucide-react";
 import { jsPDF } from "jspdf";
 import { categories as originalCategories, Pictogram } from "./data/categories";
 import { AacBoardGraph, buildBoardsFromCategories, cloneBoardGraph, isValidBoardGraph } from "./boards";
@@ -29,12 +29,14 @@ import {
 	deleteRemoteRecording,
 } from "./utils/cloudSync";
 
+// Frase favorita guardada por perfil, con estilo visual asociado.
 type Favorite = {
 	id: string;
 	items: Pictogram[];
 	colorClass: string;
 };
 
+// Perfil de uso por niño/niña con preferencias de interfaz y voz.
 type ChildProfile = {
 	id: string;
 	name: string;
@@ -42,6 +44,7 @@ type ChildProfile = {
 	speechRate: number;
 };
 
+// Grupo temporal de frases para exportes clínicos por sesión.
 type SessionGroup = {
 	id: string;
 	start: number;
@@ -54,10 +57,12 @@ type UiMode = "calma" | "color";
 const THERAPIST_PIN_STORAGE_KEY = "therapist-pin";
 const SESSION_BREAK_MS = 45 * 60 * 1000;
 
+// Perfil por defecto para primer arranque sin datos previos.
 const defaultProfiles: ChildProfile[] = [
 	{ id: "perfil-1", name: "Ana", uiMode: "calma", speechRate: 0.8 }
 ];
 
+// Paleta aleatoria por modo visual para pintar frases favoritas.
 const randomColorClass = (mode: UiMode = "calma") => {
 	const colors = mode === "calma"
 		? [
@@ -77,6 +82,7 @@ const randomColorClass = (mode: UiMode = "calma") => {
 	return colors[Math.floor(Math.random() * colors.length)];
 };
 
+// Formatos de audio candidatos según compatibilidad de navegador.
 const RECORDING_MIME_CANDIDATES = [
 	"audio/webm;codecs=opus",
 	"audio/webm",
@@ -86,18 +92,30 @@ const RECORDING_MIME_CANDIDATES = [
 	"audio/ogg",
 ];
 
+const canBrowserPlayAudioMime = (mimeType: string): boolean => {
+	if (typeof document === "undefined") return false;
+	const audio = document.createElement("audio");
+	const compactType = mimeType.split(";")[0]?.trim() || mimeType;
+	return audio.canPlayType(mimeType) !== "" || audio.canPlayType(compactType) !== "";
+};
+
+// Devuelve el primer mimeType realmente soportado por MediaRecorder.
 const pickSupportedRecordingMimeType = (): string | undefined => {
 	if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") {
 		return undefined;
 	}
+	const preferred = RECORDING_MIME_CANDIDATES.find(type => MediaRecorder.isTypeSupported(type) && canBrowserPlayAudioMime(type));
+	if (preferred) return preferred;
 	return RECORDING_MIME_CANDIDATES.find(type => MediaRecorder.isTypeSupported(type));
 };
 
 function App() {
+	// Grafo base de tableros generado desde las categorías seed.
 	const defaultBoardGraph = useMemo(() => buildBoardsFromCategories(originalCategories), []);
 	const [boardGraph, setBoardGraph] = useState<AacBoardGraph>(() => cloneBoardGraph(defaultBoardGraph));
 	const { boardsById, boardOrder, homeBoardId } = boardGraph;
 
+	// Catálogo plano para búsquedas y accesos rápidos.
 	const allPictograms: Pictogram[] = useMemo(
 		() =>
 			Object.values(boardsById)
@@ -111,6 +129,7 @@ function App() {
 		[boardsById]
 	);
 
+	// Estados principales de navegación, perfil, frase y paneles.
 	const [boardHistory, setBoardHistory] = useState<string[]>([homeBoardId]);
 	const [profiles, setProfiles] = useState<ChildProfile[]>(() => {
 		const saved = localStorage.getItem("child-profiles");
@@ -141,6 +160,10 @@ function App() {
 	const [reportRange, setReportRange] = useState<ReportRange>("7d");
 	const [customRangeStart, setCustomRangeStart] = useState<string>("");
 	const [customRangeEnd, setCustomRangeEnd] = useState<string>("");
+	const [isQuickPhrasesCollapsed, setIsQuickPhrasesCollapsed] = useState<boolean>(() => {
+		if (typeof window === "undefined") return false;
+		return window.matchMedia("(max-width: 767px)").matches;
+	});
 	const [therapistName, setTherapistName] = useState<string>(() => localStorage.getItem("therapist-name") || "");
 	const [therapistLicense, setTherapistLicense] = useState<string>(() => localStorage.getItem("therapist-license") || "");
 	const [therapistNotes, setTherapistNotes] = useState<string>(() => localStorage.getItem("therapist-notes") || "");
@@ -154,29 +177,36 @@ function App() {
 	const [isCloudHydrating, setIsCloudHydrating] = useState(false);
 	const [isCloudSyncing, setIsCloudSyncing] = useState(false);
 
+	// Favoritos y banderas de grabación local por frase.
 	const [favorites, setFavorites] = useState<Favorite[]>([]);
 	// favoriteId → tiene grabación en IndexedDB
 	const [hasAudio, setHasAudio] = useState<Record<string, boolean>>({});
 	const mediaRecorderRef = useRef<MediaRecorder | null>(null);
 	const mediaStreamRef = useRef<MediaStream | null>(null);
 	const audioChunksRef = useRef<BlobPart[]>([]);
+	const playbackAudioRef = useRef<HTMLAudioElement | null>(null);
+	const playbackUrlRef = useRef<string | null>(null);
 	const ttsWarmupDoneRef = useRef(false);
 	const ttsColdStartDoneRef = useRef(false);
 	const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
 	const [preferredVoiceURI, setPreferredVoiceURI] = useState<string>(() => localStorage.getItem("preferred-voice-uri") || "");
 
+	// Selección efectiva de perfil y tablero activos.
 	const activeProfile = profiles.find(profile => profile.id === activeProfileId) ?? profiles[0];
 	const activeBoardId = boardHistory[boardHistory.length - 1] ?? homeBoardId;
 	const activeBoard = boardsById[activeBoardId] ?? boardsById[homeBoardId];
 
+	// Persistir perfiles en localStorage.
 	useEffect(() => {
 		localStorage.setItem("child-profiles", JSON.stringify(profiles));
 	}, [profiles]);
 
+	// Persistir perfil activo.
 	useEffect(() => {
 		localStorage.setItem("active-profile-id", activeProfileId);
 	}, [activeProfileId]);
 
+	// Hidratar estado dependiente del perfil cuando cambia el contexto activo.
 	useEffect(() => {
 		if (!activeProfile) return;
 		const savedBoards = localStorage.getItem(`boards:${activeProfile.id}`);
@@ -227,17 +257,20 @@ function App() {
 		}
 	}, [activeProfile, defaultBoardGraph]);
 
+	// Guardar tableros del perfil actual.
 	useEffect(() => {
 		if (!activeProfile) return;
 		localStorage.setItem(`boards:${activeProfile.id}`, JSON.stringify(boardGraph));
 	}, [activeProfile, boardGraph]);
 
+	// Guardar log de sesión solo cuando ya se cargó el log base del perfil.
 	useEffect(() => {
 		if (!activeProfile) return;
 		if (sessionLogHydratedProfileId !== activeProfile.id) return;
 		localStorage.setItem(`session-log:${activeProfile.id}`, JSON.stringify(sessionLog));
 	}, [activeProfile, sessionLog, sessionLogHydratedProfileId]);
 
+	// Persistencia de metadatos del terapeuta.
 	useEffect(() => {
 		localStorage.setItem("therapist-name", therapistName);
 	}, [therapistName]);
@@ -250,6 +283,7 @@ function App() {
 		localStorage.setItem("therapist-notes", therapistNotes);
 	}, [therapistNotes]);
 
+	// Migración de favoritos de formatos antiguos a formato actual.
 	useEffect(() => {
 		if (favorites.length === 0) return;
 		if (typeof (favorites as unknown as string[])[0] === "string") {
@@ -265,6 +299,7 @@ function App() {
 		}
 	}, [favorites, activeProfile, uiMode]);
 
+	// Cargar catálogo de voces y cubrir cold-start de Android.
 	useEffect(() => {
 		if (!("speechSynthesis" in window)) return;
 		const synth = window.speechSynthesis;
@@ -350,14 +385,17 @@ function App() {
 		};
 	}, []);
 
+	// Persistir voz preferida.
 	useEffect(() => {
 		localStorage.setItem("preferred-voice-uri", preferredVoiceURI);
 	}, [preferredVoiceURI]);
 
+	// Persistir correo usado para login cloud.
 	useEffect(() => {
 		localStorage.setItem("cloud-email", cloudEmail);
 	}, [cloudEmail]);
 
+	// Rehidratar sesión cloud guardada y validar token vigente.
 	useEffect(() => {
 		if (!isApiConfigured()) return;
 		const stored = getCloudSession();
@@ -378,6 +416,7 @@ function App() {
 			});
 	}, []);
 
+	// Sincronización inicial cloud: pull remoto o seed con estado local.
 	useEffect(() => {
 		if (!cloudSession?.user || !isApiConfigured()) return;
 		let cancelled = false;
@@ -418,6 +457,7 @@ function App() {
 		};
 	}, [cloudSession?.user.id]);
 
+	// Sincronización incremental con debounce cuando cambian datos locales.
 	useEffect(() => {
 		if (!cloudSession?.user || !isApiConfigured() || isCloudHydrating) return;
 		const timeout = window.setTimeout(() => {
@@ -431,6 +471,7 @@ function App() {
 
 	const voiceNameFilter = /laura|pablo|helena/i;
 	const femaleSpanishSpainHint = /female|mujer|femen|woman|girl|es-es|espa[ñn]a|spain|sabina|lucia|luc[íi]a|monica|m[óo]nica|sofia|sof[íi]a|paulina|helena|maria|mar[íi]a/i;
+	// Lista visible de voces según criterio curado para la app.
 	const limitedVoices = useMemo(() => {
 		const curatedVoices = availableVoices.filter(voice => voiceNameFilter.test(`${voice.name} ${voice.voiceURI}`));
 		const extraFemaleEsEsVoice = availableVoices.find(voice => {
@@ -443,12 +484,14 @@ function App() {
 		return extraFemaleEsEsVoice ? [...curatedVoices, extraFemaleEsEsVoice] : curatedVoices;
 	}, [availableVoices]);
 
+	// Si la voz guardada ya no existe, seleccionar una válida por defecto.
 	useEffect(() => {
 		if (limitedVoices.length === 0) return;
 		if (limitedVoices.some(voice => voice.voiceURI === preferredVoiceURI)) return;
 		setPreferredVoiceURI(limitedVoices[0].voiceURI);
 	}, [limitedVoices, preferredVoiceURI]);
 
+	// Guardado de favoritos centralizado (estado + storage por perfil).
 	const persistFavorites = (updated: Favorite[]) => {
 		setFavorites(updated);
 		if (activeProfile) {
@@ -460,6 +503,7 @@ function App() {
 		}
 	};
 
+	// Crear nuevo favorito desde la frase actual evitando duplicados exactos.
 	const saveFavorite = () => {
 		if (sentence.length === 0) return;
 		const copy = sentence.map(p => ({ ...p }));
@@ -477,12 +521,14 @@ function App() {
 		window.setTimeout(() => setShowSavedNotice(false), 1500);
 	};
 
+	// Resolver la mejor voz para lectura en español.
 	const getFriendlySpanishVoice = () => {
 		if (!("speechSynthesis" in window)) return null;
 		const voices = limitedVoices.length > 0 ? limitedVoices : availableVoices.length > 0 ? availableVoices : window.speechSynthesis.getVoices();
 		return pickSpanishVoice(voices, preferredVoiceURI);
 	};
 
+	// Síntesis TTS robusta con rutas especiales para Android/iOS.
 	const speak = (text: string, source: "sentence" | "single" = "single") => {
 		if (!("speechSynthesis" in window)) return;
 		const synth = window.speechSynthesis;
@@ -545,6 +591,7 @@ function App() {
 		speakOnce();
 	};
 
+	// Operaciones básicas de edición de frase en construcción.
 	const addToSentence = (pic: Pictogram) => {
 		setSentence(prev => [...prev, { ...pic }]);
 	};
@@ -556,6 +603,7 @@ function App() {
 	const removeLast = () => setSentence(prev => prev.slice(0, -1));
 	const clearSentence = () => setSentence([]);
 
+	// Leer frase completa y guardar evento en el registro de sesión.
 	const speakSentence = () => {
 		if (sentence.length === 0) return;
 		const phraseText = sentence.map(p => p.word).join(" ");
@@ -564,11 +612,13 @@ function App() {
 		setSessionLog(prev => [...prev, { phrase: phraseText, timestamp: Date.now() }]);
 	};
 
+	// Leer una palabra aislada sin disparar click del contenedor padre.
 	const speakSingle = (e: React.MouseEvent, text: string) => {
 		e.stopPropagation();
 		speak(text);
 	};
 
+	// Altas/bajas de perfiles con limpieza de datos asociados.
 	const addProfile = () => {
 		const name = window.prompt("Nombre del perfil:", `Perfil ${profiles.length + 1}`)?.trim();
 		if (!name) return;
@@ -591,6 +641,7 @@ function App() {
 		setSentence([]);
 	};
 
+	// Derivados estadísticos para panel clínico y exportes.
 	const filteredSessionLog = useMemo(() => filterEntriesByRange(sessionLog, reportRange, { customRangeStart, customRangeEnd }), [sessionLog, reportRange, customRangeStart, customRangeEnd]);
 
 	const sessionGroups = useMemo(() => {
@@ -719,6 +770,7 @@ function App() {
 		return [...counts.entries()].sort((a, b) => b[1] - a[1]);
 	};
 
+	// Genera PDF clínico con resumen, métricas y firma.
 	const downloadSessionPdf = (entries: SessionEntry[] = filteredSessionLog, scopeLabel?: string, filenameSuffix?: string) => {
 		if (!activeProfile) return;
 		if (entries.length === 0) {
@@ -887,6 +939,7 @@ function App() {
 		doc.save(`reporte-sesion-${safeName}-${filenameSuffix ?? reportRange}-${fileDate}.pdf`);
 	};
 
+	// Ajustes por perfil: tema visual y velocidad de habla.
 	const handleUiModeChange = (mode: UiMode) => {
 		setUiMode(mode);
 		if (!activeProfile) return;
@@ -899,6 +952,7 @@ function App() {
 		setProfiles(prev => prev.map(profile => profile.id === activeProfile.id ? { ...profile, speechRate: rate } : profile));
 	};
 
+	// Selector genérico de tablero para flujos de edición.
 	const chooseBoardId = (message: string, defaultIndex = 1): string | null => {
 		const boardList = boardOrder.map((id, index) => `${index + 1}. ${boardsById[id]?.name ?? id}`).join("\n");
 		const raw = window.prompt(`${message}\n\n${boardList}`, String(defaultIndex))?.trim();
@@ -909,6 +963,7 @@ function App() {
 		return boardOrder[index] ?? null;
 	};
 
+	// Flujos de autenticación local del modo terapeuta.
 	const openTherapistMode = () => {
 		const savedPin = localStorage.getItem(THERAPIST_PIN_STORAGE_KEY);
 		setPinInput("");
@@ -916,6 +971,7 @@ function App() {
 		setPinStep(savedPin ? "enter" : "new1");
 	};
 
+	// Login cloud por email/contraseña (registro opcional).
 	const signInWithCloud = async () => {
 		if (!isApiConfigured()) {
 			setCloudStatus("Configura VITE_API_BASE_URL para activar la nube.");
@@ -947,6 +1003,7 @@ function App() {
 		}
 	};
 
+	// Logout cloud y limpieza de estado asociado.
 	const signOutCloud = async () => {
 		if (cloudSession?.user) {
 			window.sessionStorage.removeItem(`cloud-hydrated:${cloudSession.user.id}`);
@@ -956,6 +1013,7 @@ function App() {
 		setCloudStatus("Sesión cerrada.");
 	};
 
+	// Máquina de estados para crear, validar y cambiar PIN.
 	const handlePinSubmit = async () => {
 		const savedPin = localStorage.getItem(THERAPIST_PIN_STORAGE_KEY);
 		if (pinStep === "new1") {
@@ -1027,6 +1085,7 @@ function App() {
 		}
 	};
 
+	// Helpers del flujo PIN.
 	const cancelPinFlow = () => {
 		setPinStep("idle");
 		setPinInput("");
@@ -1042,6 +1101,7 @@ function App() {
 		setPinStep("new1");
 	};
 
+	// Mutaciones del grafo de tableros en modo terapeuta.
 	const updateBoard = (boardId: string, updater: (graph: AacBoardGraph) => AacBoardGraph) => {
 		if (!boardsById[boardId]) return;
 		setBoardGraph(prev => updater(prev));
@@ -1181,15 +1241,31 @@ function App() {
 		}));
 	};
 
-	const stopRecorderAndRelease = () => {
-		const recorder = mediaRecorderRef.current;
-		if (recorder && recorder.state !== "inactive") recorder.stop();
+	// Gestión de ciclo de vida del MediaRecorder y tracks del micrófono.
+	const releaseMediaStream = () => {
 		if (mediaStreamRef.current) {
 			mediaStreamRef.current.getTracks().forEach(track => track.stop());
 			mediaStreamRef.current = null;
 		}
 	};
 
+	const stopRecorderAndRelease = () => {
+		const recorder = mediaRecorderRef.current;
+		if (recorder && recorder.state !== "inactive") {
+			try {
+				// Fuerza flush del buffer en navegadores que no emiten chunks hasta el stop.
+				recorder.requestData();
+			} catch {
+				// Algunos navegadores pueden lanzar si requestData no aplica en ese estado.
+			}
+			recorder.stop();
+			return;
+		}
+		releaseMediaStream();
+		setRecordingFavoriteId(null);
+	};
+
+	// Grabar audio para favorito y sincronizarlo si hay sesión cloud.
 	const startRecordingFavorite = async (favoriteId: string) => {
 		if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
 			window.alert("Este navegador no soporta grabacion de audio.");
@@ -1207,6 +1283,7 @@ function App() {
 
 			recorder.ondataavailable = event => {
 				if (event.data.size > 0) audioChunksRef.current.push(event.data);
+	// Reproducción local y fallback remoto si el audio no existe localmente.
 			};
 
 			recorder.onstop = () => {
@@ -1223,22 +1300,23 @@ function App() {
 								try {
 									await upsertRemoteRecording(cloudSession.user.id, activeProfile.id, favoriteId, blob);
 								} catch {
-									// La copia local ya quedó guardada.
+									setCloudStatus("Grabacion guardada en local, pero no se pudo subir a la nube.");
 								}
+							} else {
+								setCloudStatus("Grabacion guardada en local. Inicia sesion en nube para guardarla en la BD remota.");
 							}
 						})
 						.catch(() => window.alert("No se pudo guardar la grabación."));
+				} else {
+					window.alert("La grabación quedó vacía. Intenta grabar al menos 1 segundo y vuelve a detener.");
 				}
-				if (mediaStreamRef.current) {
-					mediaStreamRef.current.getTracks().forEach(track => track.stop());
-					mediaStreamRef.current = null;
-				}
+				releaseMediaStream();
 				mediaRecorderRef.current = null;
 				audioChunksRef.current = [];
 				setRecordingFavoriteId(null);
 			};
 
-			recorder.start();
+			recorder.start(250);
 		} catch {
 			window.alert("No fue posible iniciar la grabacion. Revisa permisos del microfono.");
 			setRecordingFavoriteId(null);
@@ -1248,41 +1326,80 @@ function App() {
 
 	const stopRecordingFavorite = () => stopRecorderAndRelease();
 
+	const buildMissingRecordingMessage = () => {
+		const host = window.location.host;
+		return `Esta frase aun no tiene grabacion en este enlace (${host}). Si la grabaste en otro dominio (por ejemplo localhost o un tunel distinto), abre el mismo enlace donde grabaste o activa sesion en la nube para sincronizar.`;
+	};
+
 	const playFavoriteRecording = (favoriteId: string) => {
+		const playBlob = (sourceBlob: Blob) => {
+			const currentAudio = playbackAudioRef.current;
+			if (currentAudio) {
+				currentAudio.pause();
+				playbackAudioRef.current = null;
+			}
+			if (playbackUrlRef.current) {
+				URL.revokeObjectURL(playbackUrlRef.current);
+				playbackUrlRef.current = null;
+			}
+
+			const audio = new Audio();
+			audio.preload = "auto";
+			audio.setAttribute("playsinline", "true");
+			audio.volume = 1;
+
+			const directType = sourceBlob.type || "";
+			const compactType = directType.split(";")[0]?.trim() || directType;
+			const canPlayDirect = directType ? audio.canPlayType(directType) !== "" : false;
+			const canPlayCompact = compactType ? audio.canPlayType(compactType) !== "" : false;
+			const playbackBlob = !canPlayDirect && canPlayCompact ? new Blob([sourceBlob], { type: compactType }) : sourceBlob;
+
+			const url = URL.createObjectURL(playbackBlob);
+			audio.src = url;
+			playbackAudioRef.current = audio;
+			playbackUrlRef.current = url;
+
+			audio.onended = () => {
+				if (playbackUrlRef.current) {
+					URL.revokeObjectURL(playbackUrlRef.current);
+					playbackUrlRef.current = null;
+				}
+				playbackAudioRef.current = null;
+			};
+			audio.onerror = () => {
+				if (playbackUrlRef.current) {
+					URL.revokeObjectURL(playbackUrlRef.current);
+					playbackUrlRef.current = null;
+				}
+				playbackAudioRef.current = null;
+				window.alert("No se pudo reproducir la grabacion en este navegador.");
+			};
+
+			audio.play().catch(() => window.alert("No se pudo reproducir la grabacion."));
+		};
+
 		loadAudio(favoriteId)
 			.then(blob => {
 				if (!blob) {
 					if (cloudSession?.user && activeProfile) {
 						void loadRemoteRecording(cloudSession.user.id, activeProfile.id, favoriteId)
 							.then(remoteBlob => {
-								if (!remoteBlob) { window.alert("Esta frase aun no tiene grabacion."); return; }
+								if (!remoteBlob) { window.alert(buildMissingRecordingMessage()); return; }
 								void saveAudio(favoriteId, remoteBlob).catch(() => {});
-								const remoteUrl = URL.createObjectURL(remoteBlob);
-								const remoteAudio = new Audio(remoteUrl);
-								remoteAudio.preload = "auto";
-								remoteAudio.setAttribute("playsinline", "true");
-								remoteAudio.onended = () => URL.revokeObjectURL(remoteUrl);
-								remoteAudio.onerror = () => URL.revokeObjectURL(remoteUrl);
-								remoteAudio.play().catch(() => window.alert("No se pudo reproducir la grabacion."));
+								playBlob(remoteBlob);
 							})
 							.catch(() => window.alert("No se pudo cargar la grabacion."));
 						return;
 					}
-					window.alert("Esta frase aun no tiene grabacion.");
+					window.alert(buildMissingRecordingMessage());
 					return;
 				}
-				const url = URL.createObjectURL(blob);
-				const audio = new Audio(url);
-				audio.preload = "auto";
-				audio.setAttribute("playsinline", "true");
-				audio.onended = () => URL.revokeObjectURL(url);
-				audio.onerror = () => URL.revokeObjectURL(url);
-				audio.play().catch(() => window.alert("No se pudo reproducir la grabacion."));
+				playBlob(blob);
 			})
 			.catch(() => window.alert("No se pudo cargar la grabacion."));
 	};
 
-	// Hidrata el mapa hasAudio cuando cambia la lista de favoritos
+	// Hidrata el mapa hasAudio cuando cambia la lista de favoritos.
 	useEffect(() => {
 		if (favorites.length === 0) { setHasAudio({}); return; }
 		let cancelled = false;
@@ -1299,12 +1416,33 @@ function App() {
 		return () => { cancelled = true; };
 	}, [favorites]);
 
+	// Reintenta sincronizar grabaciones locales hacia la BD remota cuando hay sesión cloud.
+	useEffect(() => {
+		if (!cloudSession?.user || !isApiConfigured() || isCloudHydrating) return;
+		const timeout = window.setTimeout(() => {
+			void syncLocalRecordingsToRemote(cloudSession.user.id).catch(() => {
+				setCloudStatus("Grabaciones guardadas en local; no se pudo sincronizar con la BD remota.");
+			});
+		}, 1200);
+		return () => window.clearTimeout(timeout);
+	}, [cloudSession?.user, favorites, hasAudio, isCloudHydrating]);
+
+	// Cleanup de recursos de audio al desmontar App.
 	useEffect(() => {
 		return () => {
 			stopRecorderAndRelease();
+			if (playbackAudioRef.current) {
+				playbackAudioRef.current.pause();
+				playbackAudioRef.current = null;
+			}
+			if (playbackUrlRef.current) {
+				URL.revokeObjectURL(playbackUrlRef.current);
+				playbackUrlRef.current = null;
+			}
 		};
 	}, []);
 
+	// Navegación de tableros: entrar, saltar y volver.
 	const openBoard = (boardId: string) => {
 		if (!boardsById[boardId]) return;
 		setBoardHistory(prev => [...prev, boardId]);
@@ -1317,14 +1455,12 @@ function App() {
 		setBoardHistory(prev => (prev.length > 1 ? prev.slice(0, -1) : prev));
 	};
 
+	// Derivados de búsqueda, accesos rápidos y configuración de tabs.
 	const normalizeText = (value: string) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
 	const normalizedQuery = normalizeText(searchTerm);
 
 	const quickAccessIds = ["help", "hurt", "headache", "fever", "bathroom", "drink", "eat", "sleep", "doctor"];
 	const quickAccess = quickAccessIds.map(id => allPictograms.find(pic => pic.id === id)).filter((pic): pic is Pictogram => Boolean(pic));
-
-	const urgencyIds = ["hurt", "bathroom", "water", "help", "fever"];
-	const urgencyItems = urgencyIds.map(id => allPictograms.find(pic => pic.id === id)).filter((pic): pic is Pictogram => Boolean(pic));
 
 	const connectorWords = ["yo", "quiero", "no quiero", "ir", "al", "no", "me", "duele", "el", "la", "mi", "porque", "por favor"];
 
@@ -1352,31 +1488,57 @@ function App() {
 	] as const;
 
 	return (
+		// Estructura de layout fijo: header + urgencias + contenido + frase + tabs.
 		<div className={`min-h-[100dvh] flex flex-col overflow-x-hidden text-slate-800 ${isCalm ? "bg-[linear-gradient(180deg,#f7fbff_0%,#f2f8ff_46%,#f8fbff_100%)]" : "bg-[linear-gradient(180deg,#fffaf5_0%,#fff5f0_44%,#f3f9ff_100%)]"}`}>
-			<header className={`fixed left-0 right-0 top-0 z-30 flex h-14 items-center gap-3 border-b bg-white/95 px-4 shadow-sm backdrop-blur-sm ${isCalm ? "border-sky-100" : "border-orange-200"}`}>
-				<h1 className="text-lg font-black tracking-tight text-slate-900">Mi Comunicador</h1>
-				<div className="ml-auto rounded-xl bg-slate-100 px-2 py-1 text-xs font-bold text-slate-600">{activeProfile?.name ?? "Perfil"}</div>
+			{/* Encabezado principal con nombre de app y perfil activo */}
+			<header className={`fixed left-0 right-0 top-0 z-30 border-b bg-white/95 px-3 shadow-sm backdrop-blur-sm sm:px-4 ${isCalm ? "border-sky-100" : "border-orange-200"}`}>
+				<div className="flex min-h-14 items-center gap-2">
+					<h1 className="text-base font-black tracking-tight text-slate-900 sm:text-lg">Mi Comunicador</h1>
+					<div className="ml-auto rounded-xl bg-slate-100 px-2 py-1 text-[11px] font-bold text-slate-600 sm:text-xs">{activeProfile?.name ?? "Perfil"}</div>
+				</div>
+				<div className="pb-2.5 sm:pb-3">
+					<div className="flex items-center gap-2 rounded-2xl border-2 border-slate-200 bg-white px-3 py-2 shadow-sm">
+						<Search size={18} className="text-slate-400" />
+						<input
+							type="text"
+							value={searchTerm}
+							onChange={e => setSearchTerm(e.target.value)}
+							placeholder="Buscar pictograma"
+							className="w-full bg-transparent text-sm font-semibold text-slate-800 placeholder:text-slate-400 focus:outline-none"
+						/>
+						{searchTerm && (
+							<button onClick={() => setSearchTerm("")} className="rounded-lg p-1 text-slate-500 hover:bg-slate-100">
+								<X size={16} />
+							</button>
+						)}
+					</div>
+				</div>
 			</header>
 
-			<div className={`fixed left-0 right-0 top-14 z-20 flex max-h-24 flex-wrap items-start gap-2 overflow-y-auto border-b px-3 py-2 backdrop-blur-sm md:h-12 md:flex-nowrap md:items-center md:overflow-x-auto md:overflow-y-hidden md:py-0 ${isCalm ? "border-rose-100 bg-rose-50/90" : "border-orange-100 bg-orange-50/90"}`}>
-				{urgencyItems.map(item => (
-					<button
-						key={item.id}
-						onClick={() => {
-							addToSentence(item);
-							speak(item.word);
-						}}
-						className="shrink-0 rounded-xl border border-rose-200 bg-white px-3 py-1 text-xs font-bold text-rose-700"
-					>
-						{item.word}
-					</button>
-				))}
+			{/* Barra de frases rápidas: accesos inmediatos en la parte superior */}
+			<div className={`fixed left-0 right-0 top-14 z-20 hidden border-b px-2 py-2 backdrop-blur-sm sm:block sm:px-3 ${isCalm ? "border-sky-100 bg-sky-50/90" : "border-orange-100 bg-orange-50/90"}`}>
+				<div className="mx-auto flex max-w-6xl flex-nowrap items-center gap-1.5 overflow-x-auto pb-0.5">
+					{quickAccess.map(item => (
+						<button
+							key={item.id}
+							onClick={() => {
+								addToSentence(item);
+								speak(item.word);
+							}}
+							className={`shrink-0 rounded-xl border px-2 py-1 text-[11px] font-bold shadow-sm transition hover:brightness-95 sm:px-2.5 sm:text-xs ${isCalm ? "border-sky-200 bg-white text-sky-800" : "border-orange-200 bg-white text-orange-800"}`}
+						>
+							{item.word}
+						</button>
+					))}
+				</div>
 			</div>
 
-			<main className="flex-1 overflow-y-auto pt-[104px] pb-44">
+			{/* Zona principal controlada por pestaña activa */}
+			<main className="flex-1 overflow-y-auto pt-[120px] pb-48 sm:pt-[126px] sm:pb-44">
+				{/* Tab de tableros: navegación AAC, búsqueda y edición terapéutica */}
 				{activeTab === "boards" && (
 					<div className="flex min-h-full flex-col md:flex-row">
-						<div className={`grid grid-cols-2 gap-2 border-b bg-white/90 p-3 md:w-72 md:flex md:flex-col md:overflow-y-auto md:border-b-0 md:border-r ${isCalm ? "border-sky-100" : "border-orange-200"}`}>
+						<div className={`grid grid-cols-2 gap-2 border-b bg-white/90 p-2 sm:p-3 md:w-72 md:flex md:flex-col md:overflow-y-auto md:border-b-0 md:border-r ${isCalm ? "border-sky-100" : "border-orange-200"}`}>
 							{boardOrder.map(boardId => {
 								const board = boardsById[boardId];
 								if (!board) return null;
@@ -1398,22 +1560,34 @@ function App() {
 							})}
 						</div>
 
-						<div className="flex-1 p-3 md:p-6">
-							<div className="mb-3 flex items-center gap-2 rounded-2xl border-2 border-slate-200 bg-white px-3 py-2 shadow-sm">
-								<Search size={18} className="text-slate-400" />
-								<input
-									type="text"
-									value={searchTerm}
-									onChange={e => setSearchTerm(e.target.value)}
-									placeholder="Buscar pictograma"
-									className="w-full bg-transparent text-sm font-semibold text-slate-800 placeholder:text-slate-400 focus:outline-none"
-								/>
-								{searchTerm && (
-									<button onClick={() => setSearchTerm("")} className="rounded-lg p-1 text-slate-500 hover:bg-slate-100">
-										<X size={16} />
+						<div className="flex-1 p-2.5 sm:p-3 md:p-6">
+							{!normalizedQuery && (
+								<div className={`mb-3 rounded-2xl border p-2 shadow-sm ${isCalm ? "border-slate-200 bg-white/90" : "border-orange-200 bg-orange-50/70"}`}>
+									<button
+										onClick={() => setIsQuickPhrasesCollapsed(prev => !prev)}
+										className="flex w-full items-center justify-between rounded-xl px-2 py-2 text-left"
+									>
+										<div>
+											<div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Frases rápidas</div>
+											<div className="text-xs font-semibold text-slate-600 sm:text-sm">Toca para hablar rápido</div>
+										</div>
+										{isQuickPhrasesCollapsed ? <ChevronDown size={18} className="text-slate-600" /> : <ChevronUp size={18} className="text-slate-600" />}
 									</button>
-								)}
-							</div>
+									{!isQuickPhrasesCollapsed && (
+										<div className="mt-2 grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+											{quickAccess.map(pic => (
+												<button
+													key={`board-qp-${pic.id}`}
+													onClick={() => { addToSentence(pic); speak(pic.word); }}
+													className={`rounded-xl border px-2.5 py-2 text-sm font-bold shadow-sm transition hover:brightness-95 ${isCalm ? "border-sky-200 bg-sky-50 text-sky-900" : "border-orange-200 bg-orange-100 text-orange-900"}`}
+												>
+													<span className="block truncate px-0.5">{pic.word}</span>
+												</button>
+											))}
+										</div>
+									)}
+								</div>
+							)}
 
 							{!normalizedQuery && boardHistory.length > 1 && (
 								<button onClick={goBackBoard} className="mb-3 rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-sm font-bold text-slate-700 hover:bg-slate-50">
@@ -1434,7 +1608,7 @@ function App() {
 								</div>
 							)}
 
-							<div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+							<div className="grid grid-cols-2 gap-2.5 sm:gap-3 sm:grid-cols-3 lg:grid-cols-4">
 								{normalizedQuery
 									? visiblePictograms.map(pic => (
 											<PictogramCard key={pic.id} pictogram={pic} color={activeBoard.colorClass} onClick={p => { addToSentence(p); speak(p.word); }} />
@@ -1483,6 +1657,7 @@ function App() {
 					</div>
 				)}
 
+				{/* Tab de frases: favoritos, conectores y grabaciones de voz */}
 				{activeTab === "phrases" && (
 					<div className="flex flex-col gap-4 p-4 md:mx-auto md:max-w-2xl">
 						<div className={`rounded-2xl border p-3 ${isCalm ? "border-slate-200 bg-white/80" : "border-orange-200 bg-orange-50/60"}`}>
@@ -1591,10 +1766,40 @@ function App() {
 					</div>
 				)}
 
+				{/* Tab rápido: pictogramas de alta frecuencia */}
 				{activeTab === "quick" && (
-					<div className="p-4 md:mx-auto md:max-w-2xl">
-						<h2 className="mb-4 text-xl font-black tracking-tight text-slate-900">Acceso rápido</h2>
-						<div className="grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-5">
+					<div className="p-3 sm:p-4 md:mx-auto md:max-w-2xl">
+						<div className="mb-4 flex items-center justify-between gap-3">
+							<h2 className="text-xl font-black tracking-tight text-slate-900">Acceso rápido</h2>
+							<button
+								onClick={() => setIsQuickPhrasesCollapsed(prev => !prev)}
+								className="flex items-center gap-1 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-sm font-bold text-slate-700 shadow-sm"
+								aria-label={isQuickPhrasesCollapsed ? "Mostrar frases rápidas" : "Ocultar frases rápidas"}
+							>
+								<span className="hidden sm:inline">{isQuickPhrasesCollapsed ? "Mostrar frases" : "Ocultar frases"}</span>
+								<span className="sm:hidden">{isQuickPhrasesCollapsed ? "Frases" : "Cerrar"}</span>
+								{isQuickPhrasesCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+							</button>
+						</div>
+
+						{!isQuickPhrasesCollapsed && (
+							<div className={`mb-4 rounded-2xl border p-3 ${isCalm ? "border-slate-200 bg-white/80" : "border-orange-200 bg-orange-50/60"}`}>
+								<div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-600">Frases rápidas</div>
+								<div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+									{quickAccess.map(pic => (
+										<button
+											key={`qp-${pic.id}`}
+											onClick={() => { addToSentence(pic); speak(pic.word); }}
+											className={`rounded-xl border px-3 py-2 text-sm font-bold shadow-sm transition hover:brightness-95 ${isCalm ? "border-sky-200 bg-sky-50 text-sky-900" : "border-orange-200 bg-orange-100 text-orange-900"}`}
+										>
+											{pic.word}
+										</button>
+									))}
+								</div>
+							</div>
+						)}
+
+						<div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 sm:gap-3 md:grid-cols-5">
 							{quickAccess.map(pic => (
 								<PictogramCard key={`qt-${pic.id}`} pictogram={pic} color={isCalm ? "border-sky-200 bg-white" : "border-orange-200 bg-white"} onClick={() => { addToSentence(pic); speak(pic.word); }} />
 							))}
@@ -1602,6 +1807,7 @@ function App() {
 					</div>
 				)}
 
+				{/* Tab ajustes: perfiles, nube, voz y panel clínico */}
 				{activeTab === "settings" && (
 					<div className="flex flex-col gap-3 p-3 sm:gap-4 sm:p-4 sm:mx-auto sm:max-w-xl">
 						<h2 className="text-lg font-black tracking-tight text-slate-900 sm:text-xl">Configuración</h2>
@@ -1898,7 +2104,8 @@ function App() {
 				)}
 			</main>
 
-			<div className={`fixed bottom-16 left-0 right-0 z-20 border-t bg-white/97 px-3 py-2 shadow-md backdrop-blur-sm ${isCalm ? "border-sky-100" : "border-orange-100"} ${isSentenceSpeaking ? "ring-2 ring-inset ring-emerald-200" : ""}`}>
+			{/* Barra inferior de construcción de frase y acciones globales */}
+			<div className={`fixed bottom-16 left-0 right-0 z-20 border-t bg-white/97 px-2.5 py-2 shadow-md backdrop-blur-sm sm:px-3 ${isCalm ? "border-sky-100" : "border-orange-100"} ${isSentenceSpeaking ? "ring-2 ring-inset ring-emerald-200" : ""}`}>
 				<div className="-mx-1 mb-2 flex snap-x snap-mandatory items-start gap-2 overflow-x-auto px-1 pb-1 pt-0.5 scroll-smooth">
 					{sentence.length === 0 ? (
 						<p className="rounded-xl bg-slate-50 px-3 py-2 text-sm font-medium text-slate-400">Toca un pictograma para armar tu frase...</p>
@@ -1946,6 +2153,7 @@ function App() {
 				{showSavedNotice && <div className="mt-1.5 rounded-lg border border-emerald-300 bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-800">Frase guardada ✓</div>}
 			</div>
 
+			{/* Navegación inferior persistente entre módulos de la app */}
 			<nav className={`fixed bottom-0 left-0 right-0 z-30 flex h-16 border-t bg-white/97 backdrop-blur-sm ${isCalm ? "border-sky-100" : "border-orange-200"}`}>
 				{tabs.map(tab => (
 					<button
