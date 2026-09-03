@@ -1,0 +1,57 @@
+===========================================================================
+  MI COMUNICADOR - MANUAL DE USUARIO
+  Sección: RÁPIDO (⚡)
+===========================================================================
+
+---------------------------------------------------------------------------
+  ¿PARA QUÉ SIRVE ESTA SECCIÓN?
+---------------------------------------------------------------------------
+La sección Rápido reúne los pictogramas de USO MÁS FRECUENTE o de alta
+frecuencia, para que el niño pueda comunicar cosas cotidianas sin tener
+que buscar por todo el tablero.
+
+Es ideal para frases de la vida diaria que se repiten mucho: saludos,
+peticiones frecuentes, necesidades básicas, etc.
+
+---------------------------------------------------------------------------
+  "ACCESO RÁPIDO" (la cuadrícula principal)
+---------------------------------------------------------------------------
+Al entrar a Rápido verás el encabezado "Acceso rápido" y debajo una
+cuadrícula de pictogramas frecuentes.
+
+  - Tocar un pictograma: lo agrega a tu frase Y dice la palabra en voz
+    alta a la vez (igual que en Tableros).
+
+¿Para qué usarlo?
+  - Para armar frases cotidianas muy rápido, sin cambiar de tablero.
+  - Para mantener a la vista las palabras que el niño usa más seguido.
+
+---------------------------------------------------------------------------
+  BOTÓN "MOSTRAR FRASES / OCULTAR FRASES"
+---------------------------------------------------------------------------
+En la parte superior derecha hay un botón que dice "Mostrar frases" o
+"Ocultar frases" (en móvil se ve como "Frases" / "Cerrar").
+
+  - Sirve para desplegar o plegar el bloque de "Frases rápidas" que está
+    encima de la cuadrícula.
+  - Si lo plegas, ganas espacio en pantalla y ves la cuadrícula más
+    grande. Si lo despliegas, ves las frases rápidas adicionales.
+
+NOTA: el bloque de "Frases rápidas" (palabras de uso frecuente mostradas
+como botones grandes) está actualmente oculto en la barra inferior. En
+esta sección Rápido, el botón superior sigue permitiendo mostrarlo/ocultarlo
+según lo que necesites ver en pantalla.
+
+---------------------------------------------------------------------------
+  FLUJO RECOMENDADO PASO A PASO
+---------------------------------------------------------------------------
+1. Ve a la sección Rápido (⚡).
+2. Toca los pictogramas frecuentes que necesites para armar tu frase.
+3. Pulsa "Hablar" en la barra inferior para que la diga.
+4. Pulsa "Guardar" si quieres conservarla (la verás en Frases).
+
+COMBINA CON OTRAS SECCIONES:
+  - Si te falta una palabra que no está en Rápido, usa Tableros.
+  - Si la frase es fija y la usas mucho, guárdala para tenerla en Frases.
+
+===========================================================================

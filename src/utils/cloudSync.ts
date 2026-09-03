@@ -1,11 +1,12 @@
 import { cloudFetch, getCloudToken, isApiConfigured } from "./cloudApiClient";
-import { loadAudio, saveAudio } from "./audioDB";
+import { loadAudioRecord, saveAudio, type RecordingOwner } from "./audioDB";
 
 export type StorageSnapshot = Record<string, string>;
 
 export type RemoteRecording = {
 	profileId: string;
 	favoriteId: string;
+	voiceOwner: RecordingOwner;
 	mimeType: string;
 	dataUrl: string;
 };
@@ -23,6 +24,23 @@ const PREFIXES = ["boards:", "favorites:", "session-log:"];
 
 const isSyncableKey = (key: string) => STATIC_KEYS.includes(key) || PREFIXES.some(prefix => key.startsWith(prefix));
 
+function normalizeStoredText(value: unknown): string {
+	if (typeof value !== "string") return "";
+	const trimmed = value.trim();
+	if (trimmed === "null" || trimmed === "undefined") return "";
+	return value;
+}
+
+function normalizeStorageSnapshot(snapshot: unknown): StorageSnapshot {
+	if (!snapshot || typeof snapshot !== "object") return {};
+	const normalized: StorageSnapshot = {};
+	for (const [key, value] of Object.entries(snapshot as Record<string, unknown>)) {
+		if (!isSyncableKey(key)) continue;
+		normalized[key] = normalizeStoredText(value);
+	}
+	return normalized;
+}
+
 export function captureSyncableStorageSnapshot(): StorageSnapshot {
 	if (typeof window === "undefined") return {};
 	const snapshot: StorageSnapshot = {};
@@ -35,15 +53,29 @@ export function captureSyncableStorageSnapshot(): StorageSnapshot {
 	return snapshot;
 }
 
+export function sanitizeSyncableStorage(): boolean {
+	if (typeof window === "undefined") return false;
+	const currentSnapshot = captureSyncableStorageSnapshot();
+	const normalizedSnapshot = normalizeStorageSnapshot(currentSnapshot);
+	const currentKeys = Object.keys(currentSnapshot).sort();
+	const normalizedKeys = Object.keys(normalizedSnapshot).sort();
+	const keysChanged = currentKeys.length !== normalizedKeys.length || currentKeys.some((key, index) => key !== normalizedKeys[index]);
+	const valuesChanged = normalizedKeys.some(key => currentSnapshot[key] !== normalizedSnapshot[key]);
+	if (!keysChanged && !valuesChanged) return false;
+	applySyncableStorageSnapshot(normalizedSnapshot);
+	return true;
+}
+
 export function applySyncableStorageSnapshot(snapshot: StorageSnapshot): void {
 	if (typeof window === "undefined") return;
+	const normalizedSnapshot = normalizeStorageSnapshot(snapshot);
 	for (let index = 0; index < window.localStorage.length; index += 1) {
 		const key = window.localStorage.key(index);
 		if (!key || !isSyncableKey(key)) continue;
 		window.localStorage.removeItem(key);
 		index -= 1;
 	}
-	for (const [key, value] of Object.entries(snapshot)) {
+	for (const [key, value] of Object.entries(normalizedSnapshot)) {
 		if (isSyncableKey(key)) {
 			window.localStorage.setItem(key, value);
 		}
@@ -57,8 +89,8 @@ export function hasCloudSync(): boolean {
 export async function loadRemoteStorageSnapshot(userId: string): Promise<StorageSnapshot | null> {
 	void userId;
 	if (!hasCloudSync()) return null;
-	const payload = await cloudFetch<{ payload: StorageSnapshot }>("/api/state", { method: "GET" });
-	return payload.payload ?? null;
+	const payload = await cloudFetch<{ payload: unknown }>("/api/state", { method: "GET" });
+	return normalizeStorageSnapshot(payload.payload);
 }
 
 export async function saveRemoteStorageSnapshot(userId: string, snapshot: StorageSnapshot): Promise<void> {
@@ -95,13 +127,15 @@ export async function upsertRemoteRecording(
 	userId: string,
 	profileId: string,
 	favoriteId: string,
-	blob: Blob
+	blob: Blob,
+	voiceOwner: RecordingOwner = "family"
 ): Promise<void> {
 	void userId;
 	if (!hasCloudSync()) return;
 	await cloudFetch<{ ok: boolean }>(`/api/recordings/${encodeURIComponent(profileId)}/${encodeURIComponent(favoriteId)}`, {
 		method: "PUT",
 		body: JSON.stringify({
+			voiceOwner,
 			mimeType: blob.type || "audio/webm",
 			dataUrl: await blobToDataUrl(blob),
 		}),
@@ -132,11 +166,15 @@ export async function loadRemoteRecording(userId: string, profileId: string, fav
 export async function restoreRemoteRecordingsToLocal(userId: string): Promise<void> {
 	void userId;
 	if (!hasCloudSync()) return;
-	const data = await cloudFetch<{ recordings: Array<{ profileId: string; favoriteId: string; mimeType: string; dataUrl: string }> }>("/api/recordings", {
+	const data = await cloudFetch<{ recordings: RemoteRecording[] }>("/api/recordings", {
 		method: "GET",
 	});
 	for (const record of data.recordings ?? []) {
-		await saveAudio(record.favoriteId, dataUrlToBlob(record.dataUrl, record.mimeType || "audio/webm"));
+		await saveAudio(
+			record.favoriteId,
+			dataUrlToBlob(record.dataUrl, record.mimeType || "audio/webm"),
+			record.voiceOwner || "family"
+		);
 	}
 }
 
@@ -162,9 +200,9 @@ export async function syncLocalRecordingsToRemote(userId: string): Promise<void>
 			if (!favorite || typeof favorite !== "object") continue;
 			const favoriteId = typeof (favorite as { id?: unknown }).id === "string" ? (favorite as { id: string }).id : "";
 			if (!favoriteId) continue;
-			const blob = await loadAudio(favoriteId);
-			if (blob) {
-				await upsertRemoteRecording(userId, profileId, favoriteId, blob);
+			const record = await loadAudioRecord(favoriteId);
+			if (record) {
+				await upsertRemoteRecording(userId, profileId, favoriteId, record.blob, record.owner);
 			}
 		}
 	}

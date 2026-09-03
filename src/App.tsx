@@ -1,17 +1,19 @@
 ﻿import React, { useState, useEffect, useMemo, useRef } from "react";
-import { Play, Delete, Trash2, Volume2, Search, X, Mic, Square, ChevronRight, ChevronDown, ChevronUp } from "lucide-react";
+import { Play, Delete, Trash2, Volume2, Search, X, Mic, Square, ChevronRight, ChevronDown, ChevronUp, Download, UserRound, LogOut } from "lucide-react";
 import { jsPDF } from "jspdf";
-import { categories as originalCategories, Pictogram } from "./data/categories";
+import { categories as originalCategories, Pictogram, iconMap } from "./data/categories";
 import { AacBoardGraph, buildBoardsFromCategories, cloneBoardGraph, isValidBoardGraph } from "./boards";
 import { shouldCancelBeforeSpeak, pickSpanishVoice, buildUtterance, isIOSUserAgent } from "./utils/speakUtils";
 import { PictogramCard, PictogramIcon } from "./components/PictogramCard";
-import { saveAudio, loadAudio, deleteAudio } from "./utils/audioDB";
+import { saveAudio, loadAudio, deleteAudio, type RecordingOwner } from "./utils/audioDB";
 import { SessionEntry, ReportRange, hashPin, isHashedPin, getRangeLabel, filterEntriesByRange, deleteFilteredEntries } from "./utils/therapistUtils";
 import {
 	cloudLogin,
+	cloudLogout,
 	cloudMe,
 	cloudRegister,
 	clearCloudSession,
+	fetchExpiringRecordings,
 	getCloudSession,
 	getCloudToken,
 	isApiConfigured,
@@ -22,12 +24,14 @@ import {
 	applySyncableStorageSnapshot,
 	loadRemoteStorageSnapshot,
 	saveRemoteStorageSnapshot,
+	sanitizeSyncableStorage,
 	restoreRemoteRecordingsToLocal,
 	syncLocalRecordingsToRemote,
 	loadRemoteRecording,
 	upsertRemoteRecording,
 	deleteRemoteRecording,
 } from "./utils/cloudSync";
+import { manualSections } from "./manual";
 
 // Frase favorita guardada por perfil, con estilo visual asociado.
 type Favorite = {
@@ -56,6 +60,22 @@ type UiMode = "calma" | "color";
 
 const THERAPIST_PIN_STORAGE_KEY = "therapist-pin";
 const SESSION_BREAK_MS = 45 * 60 * 1000;
+// Tiempo de inactividad (10 min) tras el cual la sesión se cierra y hay que
+// iniciar sesión de nuevo por seguridad.
+const SESSION_INACTIVITY_MS = 10 * 60 * 1000;
+
+// Límites y saneamiento de entradas de texto del usuario (perfiles, frases, logopeda).
+const PROFILE_NAME_MAX = 20;
+const CUSTOM_WORD_MAX = 120;
+const THERAPIST_NAME_MAX = 30;
+const THERAPIST_LICENSE_MAX = 15;
+const THERAPIST_NOTES_MAX = 300;
+
+// Recorta y elimina caracteres peligrosos para HTML (< >). React ya escapa el
+// texto al renderizar, pero esto añade una defensa extra y limita el tamaño.
+const sanitizeInput = (value: string, max: number): string => {
+	return value.replace(/[<>]/g, "").slice(0, max);
+};
 
 // Perfil por defecto para primer arranque sin datos previos.
 const defaultProfiles: ChildProfile[] = [
@@ -109,6 +129,13 @@ const pickSupportedRecordingMimeType = (): string | undefined => {
 	return RECORDING_MIME_CANDIDATES.find(type => MediaRecorder.isTypeSupported(type));
 };
 
+const getStoredText = (key: string): string => {
+	const value = localStorage.getItem(key);
+	if (!value) return "";
+	const trimmed = value.trim();
+	return trimmed === "null" || trimmed === "undefined" ? "" : value;
+};
+
 function App() {
 	// Grafo base de tableros generado desde las categorías seed.
 	const defaultBoardGraph = useMemo(() => buildBoardsFromCategories(originalCategories), []);
@@ -151,32 +178,33 @@ function App() {
 	const [pendingPin, setPendingPin] = useState("");
 	const [pinError, setPinError] = useState("");
 	const [showSavedNotice, setShowSavedNotice] = useState(false);
+	const [manualSectionId, setManualSectionId] = useState<string>("intro");
 	const [recordingFavoriteId, setRecordingFavoriteId] = useState<string | null>(null);
 	const [customWordInput, setCustomWordInput] = useState("");
 	const [speechRate, setSpeechRate] = useState<number>(0.8);
 	const [uiMode, setUiMode] = useState<UiMode>("calma");
-	const [activeTab, setActiveTab] = useState<"boards" | "phrases" | "quick" | "settings">("boards");
+	const [activeTab, setActiveTab] = useState<"boards" | "phrases" | "quick" | "settings" | "manual" | "therapist">("boards");
 	const [sessionLog, setSessionLog] = useState<SessionEntry[]>([]);
 	const [reportRange, setReportRange] = useState<ReportRange>("7d");
 	const [customRangeStart, setCustomRangeStart] = useState<string>("");
 	const [customRangeEnd, setCustomRangeEnd] = useState<string>("");
-	const [isQuickPhrasesCollapsed, setIsQuickPhrasesCollapsed] = useState<boolean>(() => {
-		if (typeof window === "undefined") return false;
-		return window.matchMedia("(max-width: 767px)").matches;
-	});
-	const [therapistName, setTherapistName] = useState<string>(() => localStorage.getItem("therapist-name") || "");
-	const [therapistLicense, setTherapistLicense] = useState<string>(() => localStorage.getItem("therapist-license") || "");
-	const [therapistNotes, setTherapistNotes] = useState<string>(() => localStorage.getItem("therapist-notes") || "");
+	const [isQuickPhrasesCollapsed, setIsQuickPhrasesCollapsed] = useState<boolean>(true);
+	// Barra de navegación inferior desplegada por defecto; se puede plegar para ganar espacio.
+	const [isNavCollapsed, setIsNavCollapsed] = useState(false);
+	const [therapistName, setTherapistName] = useState<string>(() => getStoredText("therapist-name"));
+	const [therapistLicense, setTherapistLicense] = useState<string>(() => getStoredText("therapist-license"));
+	const [therapistNotes, setTherapistNotes] = useState<string>(() => getStoredText("therapist-notes"));
 	const [sessionLogHydratedProfileId, setSessionLogHydratedProfileId] = useState<string | null>(null);
 	const [cloudSession, setCloudSession] = useState<CloudSession | null>(null);
-	const [cloudEmail, setCloudEmail] = useState<string>(() => localStorage.getItem("cloud-email") || "");
-	const [cloudEmailInput, setCloudEmailInput] = useState<string>(() => localStorage.getItem("cloud-email") || "");
+	const [cloudEmail, setCloudEmail] = useState<string>(() => getStoredText("cloud-email"));
+	const [cloudEmailInput, setCloudEmailInput] = useState<string>(() => getStoredText("cloud-email"));
 	const [cloudPasswordInput, setCloudPasswordInput] = useState<string>("");
 	const [isCloudRegisterMode, setIsCloudRegisterMode] = useState(false);
 	const [cloudStatus, setCloudStatus] = useState<string>("");
+	const [expiringNotice, setExpiringNotice] = useState<string>("");
 	const [isCloudHydrating, setIsCloudHydrating] = useState(false);
 	const [isCloudSyncing, setIsCloudSyncing] = useState(false);
-
+	const [storageSanitizationVersion, setStorageSanitizationVersion] = useState(0);
 	// Favoritos y banderas de grabación local por frase.
 	const [favorites, setFavorites] = useState<Favorite[]>([]);
 	// favoriteId → tiene grabación en IndexedDB
@@ -188,8 +216,9 @@ function App() {
 	const playbackUrlRef = useRef<string | null>(null);
 	const ttsWarmupDoneRef = useRef(false);
 	const ttsColdStartDoneRef = useRef(false);
+	const mainScrollRef = useRef<HTMLElement | null>(null);
 	const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
-	const [preferredVoiceURI, setPreferredVoiceURI] = useState<string>(() => localStorage.getItem("preferred-voice-uri") || "");
+	const [preferredVoiceURI, setPreferredVoiceURI] = useState<string>(() => getStoredText("preferred-voice-uri"));
 
 	// Selección efectiva de perfil y tablero activos.
 	const activeProfile = profiles.find(profile => profile.id === activeProfileId) ?? profiles[0];
@@ -206,10 +235,13 @@ function App() {
 		localStorage.setItem("active-profile-id", activeProfileId);
 	}, [activeProfileId]);
 
-	// Hidratar estado dependiente del perfil cuando cambia el contexto activo.
-	useEffect(() => {
-		if (!activeProfile) return;
-		const savedBoards = localStorage.getItem(`boards:${activeProfile.id}`);
+	// Re-lee desde localStorage los datos dependientes del perfil y los aplica
+	// al estado de React (tableros, favoritos, log y preferencias). Se usa tanto
+	// al cambiar de perfil como tras descargar un snapshot remoto de la nube,
+	// para aplicar los datos SIN necesidad de recargar la página.
+	const hydrateProfileFromStorage = (profile: ChildProfile) => {
+		if (!profile) return;
+		const savedBoards = localStorage.getItem(`boards:${profile.id}`);
 		if (savedBoards) {
 			try {
 				const parsed = JSON.parse(savedBoards);
@@ -221,10 +253,10 @@ function App() {
 			setBoardGraph(cloneBoardGraph(defaultBoardGraph));
 		}
 		setBoardHistory([defaultBoardGraph.homeBoardId]);
-		setUiMode(activeProfile.uiMode);
-		setSpeechRate(activeProfile.speechRate);
+		setUiMode(profile.uiMode);
+		setSpeechRate(profile.speechRate);
 
-		const savedFavorites = localStorage.getItem(`favorites:${activeProfile.id}`);
+		const savedFavorites = localStorage.getItem(`favorites:${profile.id}`);
 		if (!savedFavorites) {
 			setFavorites([]);
 		} else {
@@ -236,10 +268,10 @@ function App() {
 			}
 		}
 
-		const savedSessionLog = localStorage.getItem(`session-log:${activeProfile.id}`);
+		const savedSessionLog = localStorage.getItem(`session-log:${profile.id}`);
 		if (!savedSessionLog) {
 			setSessionLog([]);
-			setSessionLogHydratedProfileId(activeProfile.id);
+			setSessionLogHydratedProfileId(profile.id);
 			return;
 		}
 		try {
@@ -250,12 +282,24 @@ function App() {
 						.map(item => ({ phrase: item.phrase, timestamp: item.timestamp }))
 				: [];
 			setSessionLog(normalized);
-			setSessionLogHydratedProfileId(activeProfile.id);
+			setSessionLogHydratedProfileId(profile.id);
 		} catch {
 			setSessionLog([]);
-			setSessionLogHydratedProfileId(activeProfile.id);
+			setSessionLogHydratedProfileId(profile.id);
 		}
+	};
+
+	// Hidratar estado dependiente del perfil cuando cambia el contexto activo.
+	useEffect(() => {
+		if (!activeProfile) return;
+		hydrateProfileFromStorage(activeProfile);
 	}, [activeProfile, defaultBoardGraph]);
+
+	// Al cambiar de pestaña, volver al inicio de la vista (evita quedar a medio scroll).
+	useEffect(() => {
+		mainScrollRef.current?.scrollTo({ top: 0, left: 0 });
+		window.scrollTo({ top: 0, left: 0 });
+	}, [activeTab]);
 
 	// Guardar tableros del perfil actual.
 	useEffect(() => {
@@ -395,6 +439,12 @@ function App() {
 		localStorage.setItem("cloud-email", cloudEmail);
 	}, [cloudEmail]);
 
+	// Limpia valores heredados como null/undefined y fuerza un próximo sync a nube.
+	useEffect(() => {
+		if (!sanitizeSyncableStorage()) return;
+		setStorageSanitizationVersion(version => version + 1);
+	}, []);
+
 	// Rehidratar sesión cloud guardada y validar token vigente.
 	useEffect(() => {
 		if (!isApiConfigured()) return;
@@ -416,6 +466,14 @@ function App() {
 			});
 	}, []);
 
+	// Al entrar a la app con sesión (login o rehidratación), ocultar el menú
+	// inferior para apreciar la vista principal; el usuario lo despliega al tocar "Menú".
+	useEffect(() => {
+		if (cloudSession?.user) {
+			setIsNavCollapsed(true);
+		}
+	}, [cloudSession?.user]);
+
 	// Sincronización inicial cloud: pull remoto o seed con estado local.
 	useEffect(() => {
 		if (!cloudSession?.user || !isApiConfigured()) return;
@@ -434,8 +492,28 @@ function App() {
 					await restoreRemoteRecordingsToLocal(cloudSession.user.id);
 					if (!cancelled) {
 						window.sessionStorage.setItem(reloadMarker, "1");
+						// Aplica el snapshot remoto al estado de React SIN recargar la página
+						// (evita el parpadeo tras el login). Se actualizan los perfiles,
+						// el perfil activo y, en consecuencia, tableros/favoritos/log.
+						let nextProfiles: ChildProfile[] = [];
+						const savedProfiles = window.localStorage.getItem("child-profiles");
+						if (savedProfiles) {
+							try {
+								const parsed: unknown = JSON.parse(savedProfiles);
+								if (Array.isArray(parsed) && parsed.length > 0) {
+									nextProfiles = parsed as ChildProfile[];
+									setProfiles(nextProfiles);
+								}
+							} catch {
+								// conserva el estado actual de perfiles
+							}
+						}
+						const savedActiveId = window.localStorage.getItem("active-profile-id");
+						const nextActiveId = savedActiveId || (cloudSession?.user ? cloudSession.user.id : "");
+						if (nextActiveId) setActiveProfileId(nextActiveId);
+						const nextProfile = nextProfiles.find(profile => profile.id === savedActiveId) ?? nextProfiles[0];
+						if (nextProfile) hydrateProfileFromStorage(nextProfile);
 						setCloudStatus("Datos sincronizados desde la nube.");
-						window.location.reload();
 					}
 					return;
 				}
@@ -467,7 +545,32 @@ function App() {
 				.finally(() => setIsCloudSyncing(false));
 		}, 900);
 		return () => window.clearTimeout(timeout);
-	}, [cloudSession?.user.id, profiles, activeProfileId, boardGraph, favorites, sessionLog, therapistName, therapistLicense, therapistNotes, preferredVoiceURI, isCloudHydrating]);
+	}, [cloudSession?.user.id, profiles, activeProfileId, boardGraph, favorites, sessionLog, therapistName, therapistLicense, therapistNotes, preferredVoiceURI, isCloudHydrating, storageSanitizationVersion]);
+
+	// Recordatorio de descarga: avisa cuando hay grabaciones de voz próximas a
+	// vencer (o ya vencidas) para que el usuario las descargue antes de la purga.
+	useEffect(() => {
+		if (!cloudSession?.user || !isApiConfigured()) {
+			setExpiringNotice("");
+			return;
+		}
+		let cancelled = false;
+		const checkExpiring = async () => {
+			const result = await fetchExpiringRecordings();
+			if (cancelled) return;
+			const expiredCount = result.expired.length;
+			const expiringCount = result.expiring.length;
+			if (expiredCount > 0) {
+				setExpiringNotice(`Tienes ${expiredCount} grabación(es) que ya vence(n) en la nube. Descárgalas pronto para conservarlas.`);
+			} else if (expiringCount > 0) {
+				setExpiringNotice(`Tienes ${expiringCount} grabación(es) por vencer en pocos días. Descárgalas si quieres conservarlas.`);
+			} else {
+				setExpiringNotice("");
+			}
+		};
+		void checkExpiring();
+		return () => { cancelled = true; };
+	}, [cloudSession?.user.id]);
 
 	const voiceNameFilter = /laura|pablo|helena/i;
 	const femaleSpanishSpainHint = /female|mujer|femen|woman|girl|es-es|espa[ñn]a|spain|sabina|lucia|luc[íi]a|monica|m[óo]nica|sofia|sof[íi]a|paulina|helena|maria|mar[íi]a/i;
@@ -620,7 +723,8 @@ function App() {
 
 	// Altas/bajas de perfiles con limpieza de datos asociados.
 	const addProfile = () => {
-		const name = window.prompt("Nombre del perfil:", `Perfil ${profiles.length + 1}`)?.trim();
+		if (profiles.length >= 3) return;
+		const name = sanitizeInput(window.prompt("Nombre del perfil:", `Perfil ${profiles.length + 1}`)?.trim() ?? "", PROFILE_NAME_MAX);
 		if (!name) return;
 		const newProfile: ChildProfile = { id: `${Date.now()}`, name, uiMode: "calma", speechRate: 0.8 };
 		setProfiles(prev => [...prev, newProfile]);
@@ -785,7 +889,6 @@ function App() {
 		const localWordUsage = calculateWordUsage(entries);
 		const topPhrases = localPhraseUsage.slice(0, 3).map(([phrase]) => phrase);
 		const topWords = localWordUsage.slice(0, 8);
-		const topSummary = topPhrases.length > 0 ? topPhrases.join(" / ") : "sin datos";
 
 		const doc = new jsPDF({ unit: "pt", format: "a4" });
 		const pageWidth = doc.internal.pageSize.getWidth();
@@ -827,7 +930,7 @@ function App() {
 		doc.text(rangeText, marginX + 14, 189);
 		doc.setFontSize(8.6);
 		doc.setTextColor(...mutedText);
-		const criteriaText = "Criterio de conteo: frases = pulsaciones de Hablar; frases unicas = textos exactos distintos; vocabulario activo = palabras normalizadas unicas.";
+		const criteriaText = "Criterio de conteo: frases = pulsaciones de Hablar; frases únicas = textos exactos distintos; vocabulario activo = palabras normalizadas únicas.";
 		const criteriaLines = doc.splitTextToSize(criteriaText, contentWidth - 28);
 		doc.text(criteriaLines, marginX + 14, 201);
 
@@ -853,7 +956,7 @@ function App() {
 		};
 
 		drawMetricCard(0, "Frases", String(entries.length));
-		drawMetricCard(1, "Frases unicas", String(localPhraseUsage.length));
+		drawMetricCard(1, "Frases únicas", String(localPhraseUsage.length));
 		drawMetricCard(2, "Vocabulario activo", String(localWordUsage.length));
 
 		const summaryY = 322;
@@ -863,11 +966,17 @@ function App() {
 		doc.text("Lectura clínica", marginX, summaryY);
 		doc.setFont("helvetica", "normal");
 		doc.setFontSize(10);
-		const summaryText = `${activeProfile.name} comunicó ${entries.length} frases en el período seleccionado. Las 3 más utilizadas fueron: ${topSummary}.`;
+		const summaryText = `${activeProfile.name} comunicó ${entries.length} frases en el período seleccionado. Frases más usadas:`;
 		const summaryLines = doc.splitTextToSize(summaryText, contentWidth);
 		doc.text(summaryLines, marginX, summaryY + 18);
-
-		let nextY = summaryY + 18 + summaryLines.length * 13 + 18;
+		let summaryYOffset = 18 + summaryLines.length * 13 + 8;
+		topPhrases.forEach((phrase, idx) => {
+			const line = `${idx + 1}. ${phrase}`;
+			doc.text(line, marginX + 8, summaryY + summaryYOffset);
+			summaryYOffset += 13;
+		});
+		const totalSummaryLines = summaryLines.length + topPhrases.length;
+		let nextY = summaryY + 18 + totalSummaryLines * 13 + 18;
 		if (therapistNotes.trim()) {
 			doc.setFont("helvetica", "bold");
 			doc.setFontSize(11);
@@ -904,6 +1013,9 @@ function App() {
 			doc.text(`- ${word} (${count})`, pageWidth / 2 + 8, rightY);
 			rightY += 14;
 		}
+
+		doc.setDrawColor(...subtleBorder);
+		doc.line(pageWidth / 2, sectionY, pageWidth / 2, Math.max(leftY, rightY) - 6);
 
 		const listsBottomY = Math.max(leftY, rightY) + 12;
 		let signatureBlockTop: number;
@@ -992,7 +1104,6 @@ function App() {
 			const session = isCloudRegisterMode
 				? await cloudRegister(email, password)
 				: await cloudLogin(email, password);
-			window.sessionStorage.removeItem(`cloud-hydrated:${session.user.id}`);
 			setCloudSession(session);
 			setCloudEmail(session.user.email);
 			setCloudEmailInput(session.user.email);
@@ -1003,15 +1114,35 @@ function App() {
 		}
 	};
 
-	// Logout cloud y limpieza de estado asociado.
+	// Logout cloud: revoca el token en el backend y limpia el estado local.
 	const signOutCloud = async () => {
 		if (cloudSession?.user) {
 			window.sessionStorage.removeItem(`cloud-hydrated:${cloudSession.user.id}`);
 		}
+		await cloudLogout();
 		clearCloudSession();
 		setCloudSession(null);
 		setCloudStatus("Sesión cerrada.");
 	};
+
+	// Cierre de sesión automático por inactividad: si no hay interacción del
+	// usuario durante SESSION_INACTIVITY_MS, la sesión se cierra y vuelve al login.
+	useEffect(() => {
+		if (!cloudSession?.user) return;
+		let timer: number | undefined;
+		const resetTimer = () => {
+			window.clearTimeout(timer);
+			timer = window.setTimeout(() => void signOutCloud(), SESSION_INACTIVITY_MS);
+		};
+		const events: (keyof WindowEventMap)[] = ["click", "keydown", "touchstart", "scroll", "mousemove"];
+		events.forEach(ev => window.addEventListener(ev, resetTimer));
+		resetTimer();
+		return () => {
+			window.clearTimeout(timer);
+			events.forEach(ev => window.removeEventListener(ev, resetTimer));
+		};
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [cloudSession?.user]);
 
 	// Máquina de estados para crear, validar y cambiar PIN.
 	const handlePinSubmit = async () => {
@@ -1032,6 +1163,7 @@ function App() {
 			setPendingPin("");
 			setPinError("");
 			setIsTherapistMode(true);
+			setActiveTab("therapist");
 			return;
 		}
 		if (pinStep === "enter") {
@@ -1049,6 +1181,7 @@ function App() {
 			setPinInput("");
 			setPinError("");
 			setIsTherapistMode(true);
+			setActiveTab("therapist");
 			return;
 		}
 		if (pinStep === "change-current") {
@@ -1272,6 +1405,7 @@ function App() {
 			return;
 		}
 		try {
+			const recordingOwner: RecordingOwner = isTherapistMode ? "therapist" : "family";
 			stopRecorderAndRelease();
 			const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 			mediaStreamRef.current = stream;
@@ -1293,12 +1427,12 @@ function App() {
 				const blobType = recorder.mimeType || chunkType || "audio/webm";
 				const blob = new Blob(audioChunksRef.current, { type: blobType });
 				if (blob.size > 0) {
-					saveAudio(favoriteId, blob)
+					saveAudio(favoriteId, blob, recordingOwner)
 						.then(() => setHasAudio(prev => ({ ...prev, [favoriteId]: true })))
 						.then(async () => {
 							if (cloudSession?.user && activeProfile) {
 								try {
-									await upsertRemoteRecording(cloudSession.user.id, activeProfile.id, favoriteId, blob);
+									await upsertRemoteRecording(cloudSession.user.id, activeProfile.id, favoriteId, blob, recordingOwner);
 								} catch {
 									setCloudStatus("Grabacion guardada en local, pero no se pudo subir a la nube.");
 								}
@@ -1399,6 +1533,38 @@ function App() {
 			.catch(() => window.alert("No se pudo cargar la grabacion."));
 	};
 
+	// Descarga la grabación de una frase a un archivo de audio (formato real del blob).
+	// Si no existe localmente, la busca remota y la descarga igualmente.
+	const downloadFavoriteRecording = async (favoriteId: string) => {
+		const favorite = favorites.find(f => f.id === favoriteId);
+		if (!favorite) return;
+		const text = favorite.items.map(p => p.word).join(" ");
+		try {
+			const blob = await loadAudio(favoriteId);
+			let sourceBlob = blob;
+			if (!sourceBlob && cloudSession?.user && activeProfile) {
+				sourceBlob = await loadRemoteRecording(cloudSession.user.id, activeProfile.id, favoriteId);
+			}
+			if (!sourceBlob) {
+				window.alert(buildMissingRecordingMessage());
+				return;
+			}
+			const mimeType = sourceBlob.type || "audio/webm";
+			const extension = mimeType.includes("mp4") || mimeType.includes("m4a") ? "m4a" : mimeType.includes("ogg") ? "ogg" : "webm";
+			const url = URL.createObjectURL(sourceBlob);
+			const safeText = (text || "grabacion").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "") || "grabacion";
+			const anchor = document.createElement("a");
+			anchor.href = url;
+			anchor.download = `${safeText}.${extension}`;
+			document.body.appendChild(anchor);
+			anchor.click();
+			document.body.removeChild(anchor);
+			window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+		} catch {
+			window.alert("No se pudo descargar la grabacion.");
+		}
+	};
+
 	// Hidrata el mapa hasAudio cuando cambia la lista de favoritos.
 	useEffect(() => {
 		if (favorites.length === 0) { setHasAudio({}); return; }
@@ -1452,8 +1618,7 @@ function App() {
 		setBoardHistory([boardId]);
 	};
 	const goBackBoard = () => {
-		setBoardHistory(prev => (prev.length > 1 ? prev.slice(0, -1) : prev));
-	};
+		setBoardHistory(prev => (prev.length > 1 ? prev.slice(0, -1) : prev));};
 
 	// Derivados de búsqueda, accesos rápidos y configuración de tabs.
 	const normalizeText = (value: string) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
@@ -1462,10 +1627,19 @@ function App() {
 	const quickAccessIds = ["help", "hurt", "headache", "fever", "bathroom", "drink", "eat", "sleep", "doctor"];
 	const quickAccess = quickAccessIds.map(id => allPictograms.find(pic => pic.id === id)).filter((pic): pic is Pictogram => Boolean(pic));
 
-	const connectorWords = ["yo", "quiero", "no quiero", "ir", "al", "no", "me", "duele", "el", "la", "mi", "porque", "por favor"];
+	const connectorGroups: { label: string; colorClass: string; words: string[] }[] = [
+		{ label: "Quién", colorClass: "border-sky-300 bg-sky-100 text-sky-900 hover:bg-sky-200", words: ["yo", "tú", "él", "ella", "nosotros", "ellos"] },
+		{ label: "Qué hace", colorClass: "border-emerald-300 bg-emerald-100 text-emerald-900 hover:bg-emerald-200", words: ["quiero", "no quiero", "necesito", "tengo", "estoy", "puedo", "soy", "voy", "ir"] },
+		{ label: "De quién", colorClass: "border-violet-300 bg-violet-100 text-violet-900 hover:bg-violet-200", words: ["mi", "mis", "tu", "su", "nuestro"] },
+		{ label: "Qué/El", colorClass: "border-amber-300 bg-amber-100 text-amber-900 hover:bg-amber-200", words: ["el", "la", "los", "las", "un", "una"] },
+		{ label: "Une", colorClass: "border-teal-300 bg-teal-100 text-teal-900 hover:bg-teal-200", words: ["a", "y", "o", "con", "sin", "para", "por", "en", "de", "al"] },
+		{ label: "Para mí/ti", colorClass: "border-rose-300 bg-rose-100 text-rose-900 hover:bg-rose-200", words: ["no", "me", "te", "se", "le", "lo"] },
+		{ label: "Une frases", colorClass: "border-purple-300 bg-purple-100 text-purple-900 hover:bg-purple-200", words: ["más", "también", "porque", "pero", "cuando", "luego", "después", "antes"] },
+		{ label: "Otras", colorClass: "border-orange-300 bg-orange-100 text-orange-900 hover:bg-orange-200", words: ["duele", "por favor"] },
+	];
 
 	const addCustomWord = (rawWord: string) => {
-		const word = rawWord.trim();
+		const word = sanitizeInput(rawWord.trim(), CUSTOM_WORD_MAX);
 		if (!word) return;
 		addToSentence({ id: `typed-${Date.now()}`, iconName: "Sparkles", word });
 	};
@@ -1480,24 +1654,191 @@ function App() {
 	const visiblePictograms = normalizedQuery ? allPictograms.filter(pic => normalizeText(pic.word).includes(normalizedQuery)) : [];
 	const isCalm = uiMode === "calma";
 
-	const tabs = [
+	const tabs: { id: "boards" | "phrases" | "quick" | "settings" | "manual" | "therapist"; label: string; icon: string }[] = [
 		{ id: "boards", label: "Tableros", icon: "📋" },
 		{ id: "phrases", label: "Frases", icon: "💬" },
 		{ id: "quick", label: "Rápido", icon: "⚡" },
+		{ id: "manual", label: "Manual", icon: "📖" },
 		{ id: "settings", label: "Ajustes", icon: "⚙️" },
-	] as const;
+		...(isTherapistMode ? [{ id: "therapist" as const, label: "Logopeda", icon: "🔒" }] : []),
+	];
+
+	if (!cloudSession?.user) {
+		// Puerta de acceso: sin sesión no se entra a la app. Diseño dividido:
+		// a la izquierda la descripción y funciones, a la derecha el formulario.
+		// En pantallas pequeñas se apila; en grandes queda lado a lado.
+		return (
+			<div className={`flex min-h-dvh flex-col bg-slate-50 lg:flex-row`}>
+				{/* Columna izquierda: presentación y funciones */}
+			<div className={`flex flex-col justify-center gap-4 px-6 py-10 text-white lg:w-1/2 lg:px-12 lg:py-0 ${isCalm ? "bg-sky-600" : "bg-orange-500"}`}>
+				<div className="flex items-center gap-3">
+					<span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-white/20 text-white">
+						<svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+							<circle cx="10" cy="11" r="6.5" />
+							<circle cx="7.8" cy="9.2" r="1" fill="currentColor" stroke="none" />
+							<circle cx="11.8" cy="9.2" r="1" fill="currentColor" stroke="none" />
+							<path d="M7.4 12.8c.7 1.1 1.6 1.7 2.6 1.7s1.9-.6 2.6-1.7" />
+							<path d="M17 10.6c1.2.1 1.4 2 0 2.8" />
+							<path d="M18.7 9.7c2 .9 2.2 3.4 0 4.6" />
+							<path d="M20.6 8.7c2.7 1.2 3 4.5 0 6.4" />
+						</svg>
+					</span>
+					<div className="leading-tight">
+						<h1 className="text-xl font-black tracking-tight sm:text-2xl">Mi Comunicador</h1>
+						<p className="text-xs font-bold uppercase tracking-widest text-white/80">Comunicación aumentativa</p>
+					</div>
+				</div>
+				<p className="max-w-md text-sm leading-relaxed text-white/90 sm:text-sm">
+					Aplicación de Comunicación Aumentativa y Alternativa (CAA) para ayudar a niños y niñas con
+					dificultades del lenguaje a expresarse con pictogramas, voz y sonidos.
+				</p>
+					<ul className="flex max-w-md flex-col gap-2 text-sm text-white/95 sm:text-sm">
+						<li className="flex items-start gap-2">
+							<span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-white/20 text-[11px] font-black">1</span>
+							<span>Tableros de pictogramas que se tocan para armar frases.</span>
+						</li>
+						<li className="flex items-start gap-2">
+							<span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-white/20 text-[11px] font-black">2</span>
+							<span>Crea tus propias frases y palabras personalizadas.</span>
+						</li>
+						<li className="flex items-start gap-2">
+							<span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-white/20 text-[11px] font-black">3</span>
+							<span>Voz sintetizada (TTS) y grabaciones de audio.</span>
+						</li>
+						<li className="flex items-start gap-2">
+							<span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-white/20 text-[11px] font-black">4</span>
+							<span>Frases favoritas, accesos rápidos y perfiles personalizados.</span>
+						</li>
+						<li className="flex items-start gap-2">
+							<span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-white/20 text-[11px] font-black">5</span>
+							<span>Modo logopeda, reportes y registro de sesión.</span>
+						</li>
+					</ul>
+				</div>
+
+				{/* Columna derecha: formulario de acceso */}
+			<div className="flex flex-1 items-center justify-center px-4 py-10">
+				<div className="w-full max-w-sm rounded-3xl border border-slate-200 bg-white p-6 shadow-sm lg:max-w-md">
+					<div className="mb-5 flex flex-col items-center gap-2 text-center lg:hidden">
+							<span className={`grid h-14 w-14 place-items-center rounded-2xl text-white shadow ${isCalm ? "bg-sky-500" : "bg-orange-500"}`}>
+								<svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+									<circle cx="10" cy="11" r="6.5" />
+									<circle cx="7.8" cy="9.2" r="1" fill="currentColor" stroke="none" />
+									<circle cx="11.8" cy="9.2" r="1" fill="currentColor" stroke="none" />
+									<path d="M7.4 12.8c.7 1.1 1.6 1.7 2.6 1.7s1.9-.6 2.6-1.7" />
+									<path d="M17 10.6c1.2.1 1.4 2 0 2.8" />
+									<path d="M18.7 9.7c2 .9 2.2 3.4 0 4.6" />
+									<path d="M20.6 8.7c2.7 1.2 3 4.5 0 6.4" />
+								</svg>
+							</span>
+							<h1 className="text-xl font-black tracking-tight text-slate-900">Mi Comunicador</h1>
+							<p className="text-xs font-bold uppercase tracking-widest text-slate-400">Comunicación aumentativa</p>
+						</div>
+
+						<h2 className="mb-1 hidden text-lg font-black tracking-tight text-slate-900 lg:block">
+							{isCloudRegisterMode ? "Crear cuenta nueva" : "Iniciar sesión"}
+						</h2>
+						<p className="mb-4 hidden text-sm text-slate-500 lg:block">
+							{isCloudRegisterMode ? "Regístrate para guardar tus datos en la nube." : "Accede con tu cuenta para usar Mi Comunicador."}
+						</p>
+
+						{!isApiConfigured() && (
+							<p className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-center text-xs font-semibold text-amber-800">
+								Configura VITE_API_BASE_URL para activar la nube.
+							</p>
+						)}
+
+						<div className="flex flex-col gap-2">
+							<div className="mb-1 grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1">
+								<button
+									type="button"
+									onClick={() => setIsCloudRegisterMode(false)}
+									className={`rounded-lg px-3 py-2 text-sm font-bold transition ${!isCloudRegisterMode ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
+								>
+									Iniciar sesión
+								</button>
+								<button
+									type="button"
+									onClick={() => setIsCloudRegisterMode(true)}
+									className={`rounded-lg px-3 py-2 text-sm font-bold transition ${isCloudRegisterMode ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
+								>
+									Crear cuenta
+								</button>
+							</div>
+
+							<input
+								type="email"
+								value={cloudEmailInput}
+								onChange={e => setCloudEmailInput(e.target.value)}
+								placeholder="correo@ejemplo.com"
+								autoComplete="email"
+								className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 focus:border-sky-400 focus:outline-none"
+							/>
+							<input
+								type="password"
+								value={cloudPasswordInput}
+								onChange={e => setCloudPasswordInput(e.target.value)}
+								placeholder="Contraseña"
+								autoComplete={isCloudRegisterMode ? "new-password" : "current-password"}
+								className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 focus:border-sky-400 focus:outline-none"
+							/>
+							<button
+								onClick={() => void signInWithCloud()}
+								className="mt-1 rounded-xl border-2 border-cyan-400 bg-cyan-400 px-3 py-2 text-sm font-bold text-white hover:bg-cyan-500"
+							>
+								{cloudStatus ? (cloudStatus.includes("Creando") || cloudStatus.includes("Iniciando") ? "Espera..." : isCloudRegisterMode ? "Crear cuenta" : "Iniciar sesión") : isCloudRegisterMode ? "Crear cuenta" : "Iniciar sesión"}
+							</button>
+							{cloudStatus && (
+								<p className={`mt-1 text-center text-xs font-semibold ${cloudStatus.includes("No se pudo") ? "text-rose-600" : "text-slate-500"}`}>
+									{cloudStatus}
+								</p>
+							)}
+						</div>
+					</div>
+				</div>
+			</div>
+		);
+	}
 
 	return (
 		// Estructura de layout fijo: header + urgencias + contenido + frase + tabs.
-		<div className={`min-h-[100dvh] flex flex-col overflow-x-hidden text-slate-800 ${isCalm ? "bg-[linear-gradient(180deg,#f7fbff_0%,#f2f8ff_46%,#f8fbff_100%)]" : "bg-[linear-gradient(180deg,#fffaf5_0%,#fff5f0_44%,#f3f9ff_100%)]"}`}>
+		<div className={`h-dvh flex flex-col overflow-x-hidden text-slate-800 ${isCalm ? "bg-[linear-gradient(180deg,#f7fbff_0%,#f2f8ff_46%,#f8fbff_100%)]" : "bg-[linear-gradient(180deg,#fffaf5_0%,#fff5f0_44%,#f3f9ff_100%)]"}`}>
 			{/* Encabezado principal con nombre de app y perfil activo */}
 			<header className={`fixed left-0 right-0 top-0 z-30 border-b bg-white/95 px-3 shadow-sm backdrop-blur-sm sm:px-4 ${isCalm ? "border-sky-100" : "border-orange-200"}`}>
-				<div className="flex min-h-14 items-center gap-2">
-					<h1 className="text-base font-black tracking-tight text-slate-900 sm:text-lg">Mi Comunicador</h1>
-					<div className="ml-auto rounded-xl bg-slate-100 px-2 py-1 text-[11px] font-bold text-slate-600 sm:text-xs">{activeProfile?.name ?? "Perfil"}</div>
+				<div className="flex min-h-14 items-center gap-3">
+					<div className="flex items-center gap-2.5">
+						<span className={`grid h-12 w-12 shrink-0 place-items-center rounded-2xl text-white shadow ${isCalm ? "bg-sky-500" : "bg-orange-500"}`}>
+							<svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+								<circle cx="10" cy="11" r="6.5" />
+								<circle cx="7.8" cy="9.2" r="1" fill="currentColor" stroke="none" />
+								<circle cx="11.8" cy="9.2" r="1" fill="currentColor" stroke="none" />
+								<path d="M7.4 12.8c.7 1.1 1.6 1.7 2.6 1.7s1.9-.6 2.6-1.7" />
+								<path d="M17 10.6c1.2.6 1.4 2 0 2.8" />
+								<path d="M18.7 9.7c2 .9 2.2 3.4 0 4.6" />
+								<path d="M20.6 8.7c2.7 1.2 3 4.5 0 6.4" />
+							</svg>
+						</span>
+						<div className="leading-tight">
+							<h1 className="text-base font-black tracking-tight text-slate-900 sm:text-lg">Mi Comunicador</h1>
+							<p className="hidden text-[10px] font-bold uppercase tracking-widest text-slate-400 sm:block">Comunicación aumentativa</p>
+						</div>
+					</div>
+					<div className="ml-auto flex items-center gap-2">
+						<div className={`flex min-h-10 items-center gap-2 rounded-2xl border-2 px-3 py-1.5 shadow-sm ${isCalm ? "border-sky-200 bg-sky-50 text-sky-800" : "border-orange-200 bg-orange-50 text-orange-800"}`}>
+							<UserRound size={18} />
+							<span className="text-xs font-bold sm:text-sm">{activeProfile?.name ?? "Perfil"}</span>
+						</div>
+						<button
+							onClick={() => void signOutCloud()}
+							title="Cerrar sesión"
+							className={`grid h-10 w-10 place-items-center rounded-2xl border-2 shadow-sm transition ${isCalm ? "border-slate-200 bg-white text-slate-500 hover:bg-slate-100" : "border-orange-200 bg-white text-orange-600 hover:bg-orange-50"}`}
+						>
+							<LogOut size={16} />
+						</button>
+					</div>
 				</div>
 				<div className="pb-2.5 sm:pb-3">
-					<div className="flex items-center gap-2 rounded-2xl border-2 border-slate-200 bg-white px-3 py-2 shadow-sm">
+					<div className="mx-auto flex max-w-md items-center gap-2 rounded-2xl border-2 border-slate-200 bg-white px-3 py-2 shadow-sm">
 						<Search size={18} className="text-slate-400" />
 						<input
 							type="text"
@@ -1515,38 +1856,44 @@ function App() {
 				</div>
 			</header>
 
-			{/* Barra de frases rápidas: accesos inmediatos en la parte superior */}
-			<div className={`fixed left-0 right-0 top-14 z-20 hidden border-b px-2 py-2 backdrop-blur-sm sm:block sm:px-3 ${isCalm ? "border-sky-100 bg-sky-50/90" : "border-orange-100 bg-orange-50/90"}`}>
-				<div className="mx-auto flex max-w-6xl flex-nowrap items-center gap-1.5 overflow-x-auto pb-0.5">
-					{quickAccess.map(item => (
-						<button
-							key={item.id}
-							onClick={() => {
-								addToSentence(item);
-								speak(item.word);
-							}}
-							className={`shrink-0 rounded-xl border px-2 py-1 text-[11px] font-bold shadow-sm transition hover:brightness-95 sm:px-2.5 sm:text-xs ${isCalm ? "border-sky-200 bg-white text-sky-800" : "border-orange-200 bg-white text-orange-800"}`}
-						>
-							{item.word}
-						</button>
-					))}
-				</div>
-			</div>
-
 			{/* Zona principal controlada por pestaña activa */}
-			<main className="flex-1 overflow-y-auto pt-[120px] pb-48 sm:pt-[126px] sm:pb-44">
+			<main ref={mainScrollRef} className={`flex-1 pt-[102px] sm:pt-[108px] ${isNavCollapsed ? "pb-36 sm:pb-32" : "pb-52 sm:pb-48"} ${activeTab === "boards" ? "overflow-y-auto md:overflow-hidden" : "overflow-y-auto"}`}>
 				{/* Tab de tableros: navegación AAC, búsqueda y edición terapéutica */}
 				{activeTab === "boards" && (
-					<div className="flex min-h-full flex-col md:flex-row">
-						<div className={`grid grid-cols-2 gap-2 border-b bg-white/90 p-2 sm:p-3 md:w-72 md:flex md:flex-col md:overflow-y-auto md:border-b-0 md:border-r ${isCalm ? "border-sky-100" : "border-orange-200"}`}>
+					<div className="flex min-h-full flex-col md:h-full md:overflow-hidden">
+						<div className="flex flex-col md:min-h-0 md:flex-1 md:flex-row">
+						<div className={`grid grid-cols-2 gap-2 border-b bg-white/90 p-2 sm:p-3 md:w-80 md:flex md:flex-col md:overflow-y-auto md:border-b-0 md:border-r ${isCalm ? "border-sky-100" : "border-orange-200"}`}>
 							{boardOrder.map(boardId => {
 								const board = boardsById[boardId];
 								if (!board) return null;
+								const fallbackIcon = "ArrowRight";
+								const categoryBoardIcons: Record<string, string> = {
+									basics: "ThumbsUp",
+									emotions: "Smile",
+									needs: "Bath",
+									health: "Stethoscope",
+									actions: "Footprints",
+									food: "Utensils",
+									things: "ToyBrick",
+									places: "MapPin",
+									social: "UserPlus",
+									school: "School",
+									time: "Clock",
+									routines: "RotateCw",
+									questions: "HelpCircle",
+									family: "User",
+									sensory: "Sparkles",
+								};
+								const categoryId = board.id.replace("board-", "");
+								const boardIconName = board.id === homeBoardId
+									? "Home"
+									: categoryBoardIcons[categoryId] ?? board.cells[0]?.iconName ?? fallbackIcon;
+								const BoardIcon = iconMap[boardIconName] ?? iconMap[fallbackIcon];
 								return (
 									<button
 										key={board.id}
 										onClick={() => jumpToBoard(board.id)}
-										className={`min-h-11 rounded-2xl border-2 px-4 py-2 text-sm font-extrabold transition ${
+										className={`flex min-h-11 items-center gap-2 rounded-2xl border-2 px-3 py-2 text-sm font-extrabold transition ${
 											activeBoard.id === board.id
 												? `${board.colorClass} scale-[1.02] shadow-md`
 												: isCalm
@@ -1554,53 +1901,26 @@ function App() {
 												: "border-orange-200 bg-orange-50 text-orange-900 hover:bg-orange-100"
 										}`}
 									>
-										{board.name}
+										<BoardIcon size={24} className="shrink-0" />
+										<span className="truncate">{board.name}</span>
 									</button>
 								);
 							})}
 						</div>
 
-						<div className="flex-1 p-2.5 sm:p-3 md:p-6">
-							{!normalizedQuery && (
-								<div className={`mb-3 rounded-2xl border p-2 shadow-sm ${isCalm ? "border-slate-200 bg-white/90" : "border-orange-200 bg-orange-50/70"}`}>
-									<button
-										onClick={() => setIsQuickPhrasesCollapsed(prev => !prev)}
-										className="flex w-full items-center justify-between rounded-xl px-2 py-2 text-left"
-									>
-										<div>
-											<div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Frases rápidas</div>
-											<div className="text-xs font-semibold text-slate-600 sm:text-sm">Toca para hablar rápido</div>
-										</div>
-										{isQuickPhrasesCollapsed ? <ChevronDown size={18} className="text-slate-600" /> : <ChevronUp size={18} className="text-slate-600" />}
-									</button>
-									{!isQuickPhrasesCollapsed && (
-										<div className="mt-2 grid grid-cols-2 gap-1.5 sm:grid-cols-3">
-											{quickAccess.map(pic => (
-												<button
-													key={`board-qp-${pic.id}`}
-													onClick={() => { addToSentence(pic); speak(pic.word); }}
-													className={`rounded-xl border px-2.5 py-2 text-sm font-bold shadow-sm transition hover:brightness-95 ${isCalm ? "border-sky-200 bg-sky-50 text-sky-900" : "border-orange-200 bg-orange-100 text-orange-900"}`}
-												>
-													<span className="block truncate px-0.5">{pic.word}</span>
-												</button>
-											))}
-										</div>
-									)}
-								</div>
-							)}
-
+						<div className="flex-1 p-2.5 sm:p-3 md:flex md:min-h-0 md:flex-col md:p-6">
 							{!normalizedQuery && boardHistory.length > 1 && (
-								<button onClick={goBackBoard} className="mb-3 rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-sm font-bold text-slate-700 hover:bg-slate-50">
+								<button onClick={goBackBoard} className="mb-3 rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-sm font-bold text-slate-700 md:shrink-0 hover:bg-slate-50">
 									Volver
 								</button>
 							)}
 
-							<h2 className="mb-4 text-2xl font-black tracking-tight text-slate-900">
+							<h2 className="mb-4 text-2xl font-black tracking-tight text-slate-900 md:shrink-0">
 								{normalizedQuery ? `Resultados (${visiblePictograms.length}) para "${searchTerm}"` : `Tablero: ${activeBoard.name}`}
 							</h2>
 
 							{isTherapistMode && !normalizedQuery && (
-								<div className="mb-4 flex flex-wrap gap-2">
+								<div className="mb-4 flex flex-wrap gap-2 md:shrink-0">
 									<button onClick={renameActiveBoard} className="rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-sm font-bold text-slate-700 hover:bg-slate-50">Renombrar tablero</button>
 									<button onClick={addSpeakCellToActiveBoard} className="rounded-xl border border-emerald-300 bg-emerald-100 px-3 py-1.5 text-sm font-bold text-emerald-800 hover:bg-emerald-200">Agregar celda</button>
 									<button onClick={createSubBoardFromActive} className="rounded-xl border border-cyan-300 bg-cyan-100 px-3 py-1.5 text-sm font-bold text-cyan-900 hover:bg-cyan-200">Crear subtablero</button>
@@ -1608,7 +1928,7 @@ function App() {
 								</div>
 							)}
 
-							<div className="grid grid-cols-2 gap-2.5 sm:gap-3 sm:grid-cols-3 lg:grid-cols-4">
+							<div className="grid grid-cols-2 gap-2.5 sm:gap-3 sm:grid-cols-3 lg:grid-cols-4 md:min-h-0 md:flex-1 md:overflow-y-auto md:pr-1">
 								{normalizedQuery
 									? visiblePictograms.map(pic => (
 											<PictogramCard key={pic.id} pictogram={pic} color={activeBoard.colorClass} onClick={p => { addToSentence(p); speak(p.word); }} />
@@ -1654,6 +1974,7 @@ function App() {
 										)}
 							</div>
 						</div>
+						</div>
 					</div>
 				)}
 
@@ -1662,15 +1983,22 @@ function App() {
 					<div className="flex flex-col gap-4 p-4 md:mx-auto md:max-w-2xl">
 						<div className={`rounded-2xl border p-3 ${isCalm ? "border-slate-200 bg-white/80" : "border-orange-200 bg-orange-50/60"}`}>
 							<div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-600">Ayuda para crear frase</div>
-							<div className="mb-2.5 -mx-1 flex snap-x snap-mandatory gap-2 overflow-x-auto px-1 pb-1">
-								{connectorWords.map(word => (
-									<button
-										key={`connector-${word}`}
-										onClick={() => addCustomWord(word)}
-										className={`min-h-9 shrink-0 snap-start rounded-xl border px-3 py-1.5 text-sm font-bold transition ${isCalm ? "border-sky-200 bg-sky-50 text-sky-900 hover:bg-sky-100" : "border-orange-300 bg-orange-100 text-orange-900 hover:bg-orange-200"}`}
-									>
-										{word}
-									</button>
+							<div className="flex flex-col gap-2.5">
+								{connectorGroups.map(group => (
+									<div key={group.label} className="flex flex-col gap-1">
+										<div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{group.label}</div>
+										<div className="-mx-1 flex snap-x snap-mandatory gap-2 overflow-x-auto px-1 pb-1 sm:flex-wrap sm:overflow-x-hidden">
+											{group.words.map(word => (
+												<button
+													key={`connector-${word}`}
+													onClick={() => addCustomWord(word)}
+													className={`min-h-9 shrink-0 snap-start rounded-xl border px-3 py-1.5 text-sm font-bold transition ${group.colorClass}`}
+												>
+													{word}
+												</button>
+											))}
+										</div>
+									</div>
 								))}
 							</div>
 							<div className="flex gap-2">
@@ -1751,6 +2079,16 @@ function App() {
 													</button>
 												)}
 
+												{hasAudio[fav.id] && (
+													<button
+														onClick={() => void downloadFavoriteRecording(fav.id)}
+														className="flex items-center gap-1.5 rounded-xl border border-slate-300 bg-slate-100 px-3 py-2.5 text-sm font-bold text-slate-700 transition hover:bg-slate-200"
+													>
+														<Download size={15} />
+														Descargar
+													</button>
+												)}
+
 												<button
 													onClick={() => setSentence(prev => [...prev, ...fav.items.map(p => ({ ...p }))])}
 													className="flex items-center gap-1.5 rounded-xl border border-indigo-300 bg-indigo-100 px-3 py-2.5 text-sm font-bold text-indigo-800 transition hover:bg-indigo-200"
@@ -1813,8 +2151,7 @@ function App() {
 						<h2 className="text-lg font-black tracking-tight text-slate-900 sm:text-xl">Configuración</h2>
 
 						<section className={`rounded-2xl border p-3 sm:p-4 ${isCalm ? "border-slate-200 bg-white" : "border-orange-200 bg-white"}`}>
-							<div className="mb-3 text-xs font-bold uppercase tracking-wide text-slate-500">Perfiles</div>
-							<div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+							<div className="mb-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
 								<select
 									value={activeProfile?.id}
 									onChange={e => {
@@ -1825,7 +2162,7 @@ function App() {
 								>
 									{profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
 								</select>
-								<button onClick={addProfile} className="rounded-xl border border-emerald-300 bg-emerald-100 px-3 py-2 text-sm font-bold text-emerald-800 hover:bg-emerald-200 sm:flex-1">+ Agregar</button>
+								<button onClick={addProfile} disabled={profiles.length >= 3} className="rounded-xl border border-emerald-300 bg-emerald-100 px-3 py-2 text-sm font-bold text-emerald-800 hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50 sm:flex-1">+ Agregar</button>
 								<button onClick={removeProfile} disabled={profiles.length <= 1} className="rounded-xl border border-rose-300 bg-rose-100 px-3 py-2 text-sm font-bold text-rose-700 hover:bg-rose-200 disabled:cursor-not-allowed disabled:opacity-50 sm:flex-1">Eliminar</button>
 							</div>
 						</section>
@@ -1833,18 +2170,18 @@ function App() {
 						<section className={`rounded-2xl border p-3 sm:p-4 ${isCalm ? "border-slate-200 bg-white" : "border-orange-200 bg-white"}`}>
 							<div className="mb-3 text-xs font-bold uppercase tracking-wide text-slate-500">Nube y acceso</div>
 							{!isApiConfigured() ? (
-								<p className="text-sm text-slate-500">Configura VITE_API_BASE_URL para sincronizar datos entre dispositivos.</p>
+								<p className="mt-3 text-sm text-slate-500">Configura VITE_API_BASE_URL para sincronizar datos entre dispositivos.</p>
 							) : cloudSession ? (
-								<div className="flex flex-col gap-2">
+								<div className="mt-3 flex flex-col gap-2">
 									<div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">
 										Conectado como {cloudSession.user.email || cloudEmail}
 									</div>
-									<button onClick={signOutCloud} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">
+									<button onClick={() => void signOutCloud()} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">
 										Cerrar sesión en la nube
 									</button>
 								</div>
 							) : (
-								<div className="flex flex-col gap-2">
+								<div className="mt-3 flex flex-col gap-2">
 									<input
 										type="email"
 										value={cloudEmailInput}
@@ -1873,6 +2210,11 @@ function App() {
 							<div className="mt-2 text-xs font-semibold text-slate-500">
 								{isCloudHydrating ? "Sincronizando datos..." : isCloudSyncing ? "Actualizando cambios..." : cloudStatus || "Tus datos se guardan en la nube cuando inicias sesión."}
 							</div>
+							{cloudSession && expiringNotice && (
+								<div className="mt-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800">
+									⚠ {expiringNotice}
+								</div>
+							)}
 						</section>
 
 						<section className={`rounded-2xl border p-3 sm:p-4 ${isCalm ? "border-slate-200 bg-white" : "border-orange-200 bg-white"}`}>
@@ -1928,7 +2270,7 @@ function App() {
 								<div className="flex flex-col gap-3">
 									<div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
 										<span className="w-fit rounded-lg bg-cyan-200 px-2.5 py-1 text-xs font-black text-cyan-900">Activo</span>
-										<button onClick={() => setIsTherapistMode(false)} className="flex-1 rounded-xl border border-cyan-300 bg-white px-3 py-2 text-sm font-bold text-cyan-800 hover:bg-cyan-100 sm:flex-none">
+										<button onClick={() => { setIsTherapistMode(false); setActiveTab("settings"); }} className="flex-1 rounded-xl border border-cyan-300 bg-white px-3 py-2 text-sm font-bold text-cyan-800 hover:bg-cyan-100 sm:flex-none">
 											Salir del modo terapeuta
 										</button>
 										{pinStep === "idle" && (
@@ -1941,21 +2283,21 @@ function App() {
 										<input
 											type="text"
 											value={therapistName}
-											onChange={e => setTherapistName(e.target.value)}
+											onChange={e => setTherapistName(sanitizeInput(e.target.value, THERAPIST_NAME_MAX))}
 											placeholder="Nombre del logopeda"
 											className="rounded-xl border border-cyan-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
 										/>
 										<input
 											type="text"
 											value={therapistLicense}
-											onChange={e => setTherapistLicense(e.target.value)}
+											onChange={e => setTherapistLicense(sanitizeInput(e.target.value, THERAPIST_LICENSE_MAX))}
 											placeholder="Nro colegiado"
 											className="rounded-xl border border-cyan-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
 										/>
 									</div>
 									<textarea
 										value={therapistNotes}
-										onChange={e => setTherapistNotes(e.target.value)}
+										onChange={e => setTherapistNotes(sanitizeInput(e.target.value, THERAPIST_NOTES_MAX))}
 										placeholder="Observaciones clínicas (opcional, se incluye en el PDF)"
 										rows={3}
 										className="rounded-xl border border-cyan-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
@@ -1996,121 +2338,184 @@ function App() {
 						)}
 						</section>
 
-						{isTherapistMode && (
-							<section className={`rounded-2xl border p-3 sm:p-4 ${isCalm ? "border-slate-200 bg-white" : "border-orange-200 bg-white"}`}>
-								<div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-									<div className="text-xs font-bold uppercase tracking-wide text-slate-500">Registro de sesión</div>
-									<div className="flex gap-2">
-										<button onClick={() => downloadSessionPdf()} disabled={filteredSessionLog.length === 0} className="rounded-lg border border-indigo-300 bg-indigo-100 px-2 py-1 text-xs font-bold text-indigo-800 hover:bg-indigo-200 disabled:cursor-not-allowed disabled:opacity-50">Descargar PDF</button>
-										{filteredSessionLog.length > 0 && (
-											<button
-												onClick={() => {
-													const label = reportRange === "all" ? "TODO el historial" : `el período "${getRangeLabel(reportRange)}"`;
-													if (!window.confirm(`¿Borrar ${label}? Esta acción no se puede deshacer.`)) return;
-													setSessionLog(prev => deleteFilteredEntries(prev, filteredSessionLog));
-												}}
-												className="rounded-lg border border-rose-300 bg-rose-100 px-2 py-1 text-xs font-bold text-rose-700 hover:bg-rose-200"
-											>
-												{reportRange === "all" ? "Borrar todo" : "Borrar período"}
-											</button>
-										)}
-									</div>
+						</div>
+				)}
+
+				{/* Tab logopeda: registro de sesión del terapeuta, vista amplia y cómoda */}
+				{activeTab === "therapist" && isTherapistMode && (
+					<div className="p-3 sm:p-4 md:mx-auto md:max-w-3xl">
+						<div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+							<h2 className="text-xl font-black tracking-tight text-slate-900">Modo logopeda</h2>
+							<button onClick={() => { setIsTherapistMode(false); setActiveTab("settings"); }} className="rounded-xl border border-cyan-300 bg-white px-3 py-2 text-sm font-bold text-cyan-800 hover:bg-cyan-100">
+								Salir del modo logopeda
+							</button>
+						</div>
+						<section className={`rounded-2xl border p-3 sm:p-4 ${isCalm ? "border-slate-200 bg-white" : "border-orange-200 bg-white"}`}>
+							<div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+								<div className="text-xs font-bold uppercase tracking-wide text-slate-500">Registro de sesión</div>
+								<div className="flex gap-2">
+									<button onClick={() => downloadSessionPdf()} disabled={filteredSessionLog.length === 0} className="rounded-lg border border-indigo-300 bg-indigo-100 px-2 py-1 text-xs font-bold text-indigo-800 hover:bg-indigo-200 disabled:cursor-not-allowed disabled:opacity-50">Descargar PDF</button>
+									{filteredSessionLog.length > 0 && (
+										<button
+											onClick={() => {
+												const label = reportRange === "all" ? "TODO el historial" : `el período "${getRangeLabel(reportRange)}"`;
+												if (!window.confirm(`¿Borrar ${label}? Esta acción no se puede deshacer.`)) return;
+												setSessionLog(prev => deleteFilteredEntries(prev, filteredSessionLog));
+											}}
+											className="rounded-lg border border-rose-300 bg-rose-100 px-2 py-1 text-xs font-bold text-rose-700 hover:bg-rose-200"
+										>
+											{reportRange === "all" ? "Borrar todo" : "Borrar período"}
+										</button>
+									)}
 								</div>
-								<div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
-									<button onClick={() => setReportRange("today")} className={`rounded-lg border px-2 py-1 text-xs font-bold ${reportRange === "today" ? "border-sky-300 bg-sky-100 text-sky-800" : "border-slate-200 bg-white text-slate-600"}`}>Hoy</button>
-									<button onClick={() => setReportRange("7d")} className={`rounded-lg border px-2 py-1 text-xs font-bold ${reportRange === "7d" ? "border-sky-300 bg-sky-100 text-sky-800" : "border-slate-200 bg-white text-slate-600"}`}>7 días</button>
-									<button onClick={() => setReportRange("30d")} className={`rounded-lg border px-2 py-1 text-xs font-bold ${reportRange === "30d" ? "border-sky-300 bg-sky-100 text-sky-800" : "border-slate-200 bg-white text-slate-600"}`}>30 días</button>
-									<button onClick={() => setReportRange("all")} className={`rounded-lg border px-2 py-1 text-xs font-bold ${reportRange === "all" ? "border-sky-300 bg-sky-100 text-sky-800" : "border-slate-200 bg-white text-slate-600"}`}>Todo</button>
-									<button onClick={() => setReportRange("custom")} className={`rounded-lg border px-2 py-1 text-xs font-bold ${reportRange === "custom" ? "border-sky-300 bg-sky-100 text-sky-800" : "border-slate-200 bg-white text-slate-600"}`}>Personalizado</button>
+							</div>
+							<div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
+								<button onClick={() => setReportRange("today")} className={`rounded-lg border px-2 py-1 text-xs font-bold ${reportRange === "today" ? "border-sky-300 bg-sky-100 text-sky-800" : "border-slate-200 bg-white text-slate-600"}`}>Hoy</button>
+								<button onClick={() => setReportRange("7d")} className={`rounded-lg border px-2 py-1 text-xs font-bold ${reportRange === "7d" ? "border-sky-300 bg-sky-100 text-sky-800" : "border-slate-200 bg-white text-slate-600"}`}>7 días</button>
+								<button onClick={() => setReportRange("30d")} className={`rounded-lg border px-2 py-1 text-xs font-bold ${reportRange === "30d" ? "border-sky-300 bg-sky-100 text-sky-800" : "border-slate-200 bg-white text-slate-600"}`}>30 días</button>
+								<button onClick={() => setReportRange("all")} className={`rounded-lg border px-2 py-1 text-xs font-bold ${reportRange === "all" ? "border-sky-300 bg-sky-100 text-sky-800" : "border-slate-200 bg-white text-slate-600"}`}>Todo</button>
+								<button onClick={() => setReportRange("custom")} className={`rounded-lg border px-2 py-1 text-xs font-bold ${reportRange === "custom" ? "border-sky-300 bg-sky-100 text-sky-800" : "border-slate-200 bg-white text-slate-600"}`}>Personalizado</button>
+							</div>
+							{reportRange === "custom" && (
+								<div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+									<input type="date" value={customRangeStart} onChange={e => setCustomRangeStart(e.target.value)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700" />
+									<input type="date" value={customRangeEnd} onChange={e => setCustomRangeEnd(e.target.value)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700" />
 								</div>
-								{reportRange === "custom" && (
-									<div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-										<input type="date" value={customRangeStart} onChange={e => setCustomRangeStart(e.target.value)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700" />
-										<input type="date" value={customRangeEnd} onChange={e => setCustomRangeEnd(e.target.value)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700" />
-									</div>
-								)}
-								<div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
-									<div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-										<div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Frases visibles</div>
-										<div className="text-lg font-black text-slate-800">{filteredSessionLog.length}</div>
-									</div>
-									<div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-										<div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Frases únicas</div>
-										<div className="text-lg font-black text-slate-800">{phraseUsage.length}</div>
-									</div>
-									<div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-										<div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Vocabulario activo</div>
-										<div className="text-lg font-black text-slate-800">{wordUsage.length}</div>
-									</div>
+							)}
+							<div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+								<div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+									<div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Frases visibles</div>
+									<div className="text-lg font-black text-slate-800">{filteredSessionLog.length}</div>
 								</div>
-								{phraseUsage.length > 0 && (
-									<p className="mb-3 rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2 text-sm font-semibold text-indigo-900">
-										{activeProfile?.name ?? "Perfil"}, período {getRangeLabel(reportRange)}: comunicó {filteredSessionLog.length} frases para el reporte, las 3 más usadas fueron {phraseUsage.slice(0, 3).map(([phrase]) => phrase).join(" / ")}.
+								<div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+									<div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Frases únicas</div>
+									<div className="text-lg font-black text-slate-800">{phraseUsage.length}</div>
+								</div>
+								<div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+									<div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Vocabulario activo</div>
+									<div className="text-lg font-black text-slate-800">{wordUsage.length}</div>
+								</div>
+							</div>
+							{phraseUsage.length > 0 && (
+								<div className="mb-3 rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2.5">
+									<p className="text-sm font-semibold text-slate-800">
+										<span className="font-black text-indigo-900">{activeProfile?.name ?? "Perfil"}</span>
+										{" — período "}<span className="font-black">{getRangeLabel(reportRange).toLowerCase()}</span>
+										: comunicó <span className="font-black">{filteredSessionLog.length} frases</span> para el reporte.
 									</p>
-								)}
-								{sessionLog.length === 0 ? (
-									<p className="text-sm text-slate-400">No hay frases comunicadas todavía.</p>
-								) : filteredSessionLog.length === 0 ? (
-									<p className="text-sm text-slate-400">No hay frases en el período seleccionado.</p>
-								) : (
-									<div className="flex max-h-64 flex-col gap-2 overflow-y-auto">
-										{[...filteredSessionLog].reverse().map((entry) => (
-										<div key={entry.timestamp} className="flex items-start gap-2 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
-										<span className="mt-0.5 shrink-0 font-mono text-xs text-slate-400">{new Date(entry.timestamp).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
-										<span className="text-sm font-semibold text-slate-700">{entry.phrase}</span>
-										</div>
-										))}
-									</div>
-								)}
-								{sessionGroups.length > 0 && (
-									<div className="mt-4">
-										<div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">Exportar por sesión</div>
-										<div className="flex flex-col gap-2">
-											{sessionGroups.map((session, index) => {
-												const labelDate = new Intl.DateTimeFormat("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date(session.start));
-												const startTime = new Intl.DateTimeFormat("es-ES", { hour: "2-digit", minute: "2-digit" }).format(new Date(session.start));
-												const endTime = new Intl.DateTimeFormat("es-ES", { hour: "2-digit", minute: "2-digit" }).format(new Date(session.end));
-												const sessionLabel = `sesion-${sessionGroups.length - index}`;
-												return (
-													<div key={session.id} className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-														<div className="text-sm font-bold text-slate-700">Sesión {sessionGroups.length - index}</div>
-														<div className="text-xs font-semibold text-slate-500">{labelDate} · {startTime} - {endTime} · {session.entries.length} frases</div>
-														<button
-															onClick={() => downloadSessionPdf(session.entries, `sesión ${sessionGroups.length - index}`, sessionLabel)}
-															className="ml-auto rounded-lg border border-indigo-300 bg-indigo-100 px-2 py-1 text-xs font-bold text-indigo-800 hover:bg-indigo-200"
-														>
-															PDF sesión
-														</button>
-													</div>
-												);
-											})}
-										</div>
-									</div>
-								)}
-								<div className="mt-4">
-									<div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">Progreso por perfil (vocabulario activo)</div>
-									<div className="grid gap-2 sm:grid-cols-2">
-										{profileVocabularyStats.map(stat => (
-											<div key={stat.profileId} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-												<div className="text-sm font-black text-slate-800">{stat.profileName}</div>
-												<div className="text-xs font-semibold text-slate-600">Frases: {stat.phrasesCount} · Vocabulario activo: {stat.activeVocabulary}</div>
+									{phraseUsage.length > 0 && (
+										<>
+											<div className="mt-2 rounded-lg border border-indigo-200/70 bg-white/70 px-3 py-2">
+												<div className="mb-1 text-[11px] font-bold uppercase tracking-wide text-slate-500">Frases más usadas</div>
+												<ol className="list-decimal space-y-0.5 pl-4 marker:font-black marker:text-indigo-400">
+													{phraseUsage.slice(0, 3).map(([phrase]) => (
+														<li key={phrase} className="text-sm font-semibold leading-snug text-slate-700">“{phrase}”</li>
+													))}
+												</ol>
 											</div>
-										))}
+										</>
+									)}
+								</div>
+							)}
+							{sessionLog.length === 0 ? (
+								<p className="text-sm text-slate-400">No hay frases comunicadas todavía.</p>
+							) : filteredSessionLog.length === 0 ? (
+								<p className="text-sm text-slate-400">No hay frases en el período seleccionado.</p>
+							) : (
+								<div className="flex max-h-64 flex-col gap-2 overflow-y-auto">
+									{[...filteredSessionLog].reverse().map((entry) => (
+									<div key={entry.timestamp} className="flex items-start gap-2 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
+									<span className="mt-0.5 shrink-0 font-mono text-xs text-slate-400">{new Date(entry.timestamp).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+									<span className="text-sm font-semibold text-slate-700">{entry.phrase}</span>
+									</div>
+									))}
+								</div>
+							)}
+							{sessionGroups.length > 0 && (
+								<div className="mt-4">
+									<div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">Exportar por sesión</div>
+									<div className="flex flex-col gap-2">
+										{sessionGroups.map((session, index) => {
+											const labelDate = new Intl.DateTimeFormat("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date(session.start));
+											const startTime = new Intl.DateTimeFormat("es-ES", { hour: "2-digit", minute: "2-digit" }).format(new Date(session.start));
+											const endTime = new Intl.DateTimeFormat("es-ES", { hour: "2-digit", minute: "2-digit" }).format(new Date(session.end));
+											const sessionLabel = `sesion-${sessionGroups.length - index}`;
+											return (
+												<div key={session.id} className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+													<div className="text-sm font-bold text-slate-700">Sesión {sessionGroups.length - index}</div>
+													<div className="text-xs font-semibold text-slate-500">{labelDate} · {startTime} - {endTime} · {session.entries.length} frases</div>
+													<button
+														onClick={() => downloadSessionPdf(session.entries, `sesión ${sessionGroups.length - index}`, sessionLabel)}
+														className="ml-auto rounded-lg border border-indigo-300 bg-indigo-100 px-2 py-1 text-xs font-bold text-indigo-800 hover:bg-indigo-200"
+													>
+														PDF sesión
+													</button>
+												</div>
+											);
+										})}
 									</div>
 								</div>
-							</section>
-						)}
+							)}
+							<div className="mt-4">
+								<div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">Progreso por perfil (vocabulario activo)</div>
+								<div className="grid gap-2 sm:grid-cols-2">
+									{profileVocabularyStats.map(stat => (
+										<div key={stat.profileId} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+											<div className="text-sm font-black text-slate-800">{stat.profileName}</div>
+											<div className="text-xs font-semibold text-slate-600">Frases: {stat.phrasesCount} · Vocabulario activo: {stat.activeVocabulary}</div>
+										</div>
+									))}
+								</div>
+							</div>
+						</section>
+					</div>
+				)}
+
+				{/* Tab manual: guías de uso para el usuario, accesible desde el menú */}
+				{activeTab === "manual" && (
+					<div className="p-3 sm:p-4 md:mx-auto md:max-w-2xl">
+						<h2 className="mb-3 text-xl font-black tracking-tight text-slate-900">Manual de uso</h2>
+						<p className="mb-3 text-sm text-slate-600">Elige una sección para ver cómo usarla correctamente.</p>
+						<div className="mb-4 flex flex-wrap gap-2">
+							{manualSections.map(section => (
+								<button
+									key={section.id}
+									onClick={() => setManualSectionId(section.id)}
+									className={`rounded-full border px-3 py-1.5 text-sm font-bold transition ${section.id === manualSectionId ? "border-sky-400 bg-sky-100 text-sky-800" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}
+								>
+									{section.title}
+								</button>
+							))}
+						</div>
+						<div className={`overflow-hidden rounded-2xl border bg-white shadow-sm ${isCalm ? "border-slate-200" : "border-orange-200"}`}>
+							<div className="border-b border-slate-100 px-4 py-2.5">
+								<div className="text-xs font-bold uppercase tracking-wide text-slate-500">{manualSections.find(s => s.id === manualSectionId)?.title ?? "Manual"}</div>
+							</div>
+							<div className="max-h-[70dvh] overflow-y-auto px-4 py-4 sm:px-6">
+								<pre className="whitespace-pre-wrap font-sans text-[13px] leading-relaxed text-slate-800">
+									{manualSections.find(s => s.id === manualSectionId)?.text ?? ""}
+								</pre>
+							</div>
+						</div>
 					</div>
 				)}
 			</main>
 
-			{/* Barra inferior de construcción de frase y acciones globales */}
-			<div className={`fixed bottom-16 left-0 right-0 z-20 border-t bg-white/97 px-2.5 py-2 shadow-md backdrop-blur-sm sm:px-3 ${isCalm ? "border-sky-100" : "border-orange-100"} ${isSentenceSpeaking ? "ring-2 ring-inset ring-emerald-200" : ""}`}>
-				<div className="-mx-1 mb-2 flex snap-x snap-mandatory items-start gap-2 overflow-x-auto px-1 pb-1 pt-0.5 scroll-smooth">
+			{/* Barra inferior fija: construcción de frase, frases rápidas y navegación apiladas */}
+			<div className="fixed bottom-0 left-0 right-0 z-30 flex flex-col items-center justify-center gap-1.5 border-t border-slate-200 bg-white/90 px-2 py-2 backdrop-blur-sm sm:px-3">
+				{/* Voz/sentence bar + acciones: siempre visible */}
+				<div className={`w-2xl border-t bg-white/97 px-2.5 py-2 shadow-md backdrop-blur-sm sm:px-3 ${isCalm ? "border-sky-100" : "border-orange-100"} ${isSentenceSpeaking ? "ring-2 ring-inset ring-emerald-200" : ""}`}>
+				<div className="-mx-1 mb-2 flex snap-x snap-mandatory items-start gap-2 overflow-x-auto px-1 pb-1 pt-0.5 scroll-smooth sm:flex-wrap sm:overflow-y-auto sm:overflow-x-hidden sm:max-h-[168px]">
 					{sentence.length === 0 ? (
 						<p className="rounded-xl bg-slate-50 px-3 py-2 text-sm font-medium text-slate-400">Toca un pictograma para armar tu frase...</p>
 					) : (
-						sentence.map((pic, index) => (
+						<>
+							<div className="flex h-[72px] shrink-0 snap-start items-center rounded-xl bg-slate-100 px-2.5 text-center text-[11px] font-black leading-tight text-slate-500 sm:h-auto sm:min-h-[72px] sm:self-stretch">
+								{sentence.length}
+								<br />
+								pictogramas
+							</div>
+						{sentence.map((pic, index) => (
 							<div
 								key={`${pic.id}-${index}`}
 								onClick={speakSentence}
@@ -2122,7 +2527,7 @@ function App() {
 										speakSentence();
 									}
 								}}
-								className={`relative flex min-h-[72px] min-w-[84px] shrink-0 snap-start flex-col items-center justify-center rounded-2xl border bg-white px-2 py-2 pr-7 shadow-sm transition active:scale-[0.98] ${isCalm ? "border-sky-200" : "border-orange-200"} ${isSentenceSpeaking ? "scale-[1.03] animate-pulse border-emerald-300" : ""}`}
+								className={`relative flex min-h-[72px] min-w-[84px] shrink-0 snap-start flex-col items-center justify-center rounded-2xl border bg-white px-2 py-2 pr-7 shadow-sm transition active:scale-[0.98] sm:min-w-[76px] ${isCalm ? "border-sky-200" : "border-orange-200"} ${isSentenceSpeaking ? "scale-[1.03] animate-pulse border-emerald-300" : ""}`}
 							>
 								<button onClick={e => { e.stopPropagation(); removeSentenceItem(index); }} className="absolute right-0.5 top-0.5 flex h-5 w-5 items-center justify-center rounded-full border border-rose-400 bg-rose-500 text-white shadow-sm transition hover:bg-rose-600" aria-label={`Quitar ${pic.word}`}>
 									<X size={10} strokeWidth={3} aria-hidden="true" />
@@ -2130,48 +2535,84 @@ function App() {
 								<PictogramIcon name={pic.iconName} className="scale-75" />
 								<span className="mt-0.5 line-clamp-2 text-center text-[11px] font-bold leading-tight text-slate-700">{pic.word}</span>
 							</div>
-						))
+						))}
+						</>
 					)}
 				</div>
 
-				<div className="flex gap-2">
-					<button onClick={removeLast} disabled={sentence.length === 0} className={`flex min-h-9 items-center justify-center rounded-xl border-2 px-3 font-bold text-slate-700 shadow-sm transition disabled:cursor-not-allowed disabled:opacity-45 ${isCalm ? "border-slate-300 bg-slate-100 hover:bg-slate-200" : "border-orange-300 bg-orange-100 hover:bg-orange-200"}`}>
+				<div className="flex gap-1.5 sm:gap-2">
+					<button onClick={removeLast} disabled={sentence.length === 0} className={`flex min-h-9 shrink-0 items-center justify-center rounded-xl border-2 px-2.5 font-bold text-slate-700 shadow-sm transition disabled:cursor-not-allowed disabled:opacity-45 sm:px-3 ${isCalm ? "border-slate-300 bg-slate-100 hover:bg-slate-200" : "border-orange-300 bg-orange-100 hover:bg-orange-200"}`}>
 						<Delete size={18} />
 					</button>
-					<button onClick={clearSentence} disabled={sentence.length === 0} className="flex min-h-9 items-center justify-center rounded-xl border-2 border-rose-200 bg-rose-50 px-3 text-rose-700 shadow-sm transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-45">
+					<button onClick={clearSentence} disabled={sentence.length === 0} className="flex min-h-9 shrink-0 items-center justify-center rounded-xl border-2 border-rose-200 bg-rose-50 px-2.5 text-rose-700 shadow-sm transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-45 sm:px-3">
 						<Trash2 size={18} className="text-rose-600" />
 					</button>
 					<button onClick={speakSentence} disabled={sentence.length === 0} className={`flex min-h-9 flex-1 items-center justify-center gap-2 rounded-xl border-2 font-bold text-white shadow-sm transition disabled:cursor-not-allowed disabled:opacity-45 ${isCalm ? "border-emerald-400 bg-emerald-400 hover:bg-emerald-500" : "border-cyan-400 bg-cyan-400 hover:bg-cyan-500"}`}>
-						<Play size={17} />
+						<Play size={17} className="hidden sm:block" />
 						<span className="text-sm">Hablar</span>
 					</button>
-					<button onClick={saveFavorite} className={`flex min-h-9 items-center justify-center rounded-xl border-2 px-3 text-sm font-bold shadow-sm transition ${isCalm ? "border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100" : "border-pink-300 bg-pink-100 text-pink-800 hover:bg-pink-200"}`}>
+					<button onClick={saveFavorite} className={`flex min-h-9 shrink-0 items-center justify-center rounded-xl border-2 px-2.5 text-sm font-bold shadow-sm transition sm:px-3 ${isCalm ? "border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100" : "border-pink-300 bg-pink-100 text-pink-800 hover:bg-pink-200"}`}>
 						Guardar
+					</button>
+					<button onClick={() => setIsNavCollapsed(c => !c)} aria-label={isNavCollapsed ? "Mostrar menú" : "Ocultar menú"} title={isNavCollapsed ? "Mostrar menú" : "Ocultar menú"} className={`flex min-h-9 shrink-0 items-center justify-center rounded-xl border-2 px-2.5 text-white shadow-sm transition sm:px-3 ${isCalm ? "border-sky-700 bg-sky-500 hover:bg-sky-600" : "border-orange-700 bg-orange-500 hover:bg-orange-600"}`}>
+						{isNavCollapsed ? <ChevronUp size={18} strokeWidth={3} /> : <ChevronDown size={18} strokeWidth={3} />}
+						<span className="ml-1.5 hidden text-sm font-black sm:inline">{isNavCollapsed ? "Menú" : "Ocultar menú"}</span>
 					</button>
 				</div>
 
 				{showSavedNotice && <div className="mt-1.5 rounded-lg border border-emerald-300 bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-800">Frase guardada ✓</div>}
-			</div>
+				</div>
 
-			{/* Navegación inferior persistente entre módulos de la app */}
-			<nav className={`fixed bottom-0 left-0 right-0 z-30 flex h-16 border-t bg-white/97 backdrop-blur-sm ${isCalm ? "border-sky-100" : "border-orange-200"}`}>
-				{tabs.map(tab => (
-					<button
-						key={tab.id}
-						onClick={() => setActiveTab(tab.id)}
-						className={`flex flex-1 flex-col items-center justify-center gap-0.5 transition ${
-							activeTab === tab.id
-								? isCalm
-									? "border-t-2 border-sky-500 text-sky-700"
-									: "border-t-2 border-orange-500 text-orange-700"
-								: "text-slate-500 hover:text-slate-700"
-						}`}
-					>
-						<span className="text-xl">{tab.icon}</span>
-						<span className="text-[11px] font-bold">{tab.label}</span>
-					</button>
-				))}
-			</nav>
+				{/* Frases rápidas: fila desplegable sobre la navegación inferior }
+				{!isNavCollapsed && (
+					<div className={`border-t px-2.5 py-2 backdrop-blur-sm sm:px-3 ${isCalm ? "border-sky-100 bg-sky-50/90" : "border-orange-100 bg-orange-50/90"}`}>
+						<button
+							onClick={() => setIsQuickPhrasesCollapsed(prev => !prev)}
+							className="flex w-full items-center justify-between rounded-xl px-2 py-1 text-left"
+						>
+							<span className="text-xs font-bold uppercase tracking-wide text-slate-500">Frases rápidas</span>
+							{isQuickPhrasesCollapsed ? <ChevronDown size={18} className="text-slate-600" /> : <ChevronUp size={18} className="text-slate-600" />}
+						</button>
+						{!isQuickPhrasesCollapsed && (
+							<div className="mt-2 flex gap-1.5 overflow-x-auto pb-1">
+								{quickAccess.map(pic => (
+									<button
+										key={`nav-qp-${pic.id}`}
+										onClick={() => { addToSentence(pic); speak(pic.word); }}
+										className={`shrink-0 rounded-xl border px-2.5 py-2 text-sm font-bold shadow-sm transition hover:brightness-95 ${isCalm ? "border-sky-200 bg-white text-sky-900" : "border-orange-200 bg-white text-orange-900"}`}
+									>
+										<span className="block truncate px-0.5">{pic.word}</span>
+									</button>
+								))}
+							</div>
+						)}
+					</div>
+				)*/}
+
+				{/* Navegación inferior persistente entre módulos de la app */}
+				{!isNavCollapsed && (
+					<nav className={`w-full border-t bg-white/97 backdrop-blur-sm ${isCalm ? "border-sky-100" : "border-orange-200"}`}>
+						<div className="flex h-20">
+							{tabs.map(tab => (
+								<button
+									key={tab.id}
+									onClick={() => setActiveTab(tab.id)}
+									className={`flex flex-1 flex-col items-center justify-center gap-0.5 transition ${
+										activeTab === tab.id
+											? isCalm
+												? "border-t-2 border-sky-500 text-sky-700"
+												: "border-t-2 border-orange-500 text-orange-700"
+											: "text-slate-500 hover:text-slate-700"
+									}`}
+								>
+									<span className="text-2xl">{tab.icon}</span>
+									<span className="text-[13px] font-bold">{tab.label}</span>
+								</button>
+							))}
+						</div>
+					</nav>
+				)}
+			</div>
 		</div>
 	);
 }

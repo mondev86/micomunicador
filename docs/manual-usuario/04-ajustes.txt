@@ -1,0 +1,111 @@
+===========================================================================
+  MI COMUNICADOR - MANUAL DE USUARIO
+  Sección: AJUSTES (⚙️)
+===========================================================================
+
+Esta sección es la más completa. La usan la FAMILIA (perfiles, voz, color,
+nube) y también el LOGOPEDA (modo terapeuta y reportes).
+
+---------------------------------------------------------------------------
+  1) PERFILES
+---------------------------------------------------------------------------
+Los perfiles son las "identidades" dentro de la app (ej. "Ana", "Luis").
+
+- Selector de perfil: eliges cuál es el perfil activo. Cada perfil tiene
+  SUS propios tableros, frases, modo visual y velocidad de voz.
+- "+ Agregar": crea un nuevo perfil. Máximo 3 perfiles por dispositivo.
+- "Eliminar": borra el perfil activo (último solito no te deja borrar).
+- Cambiar de perfil carga sus datos automáticamente, sin mezclarlos.
+
+---------------------------------------------------------------------------
+  2) NUBE Y ACCESO (cuenta)
+---------------------------------------------------------------------------
+- Si la app no tiene API configurada, verás un aviso indicándolo.
+- Conectado como: muestra el correo con el que iniciaste sesión.
+- "Cerrar sesión en la nube": cierra la cuenta (volverá la pantalla de
+  login la próxima vez).
+- Si aún no has iniciado sesión desde Ajustes, puedes hacerlo aquí con tu
+  correo y contraseña (o "Crear cuenta nueva" si aún no tienes).
+- Estado de sincronización: abajo verás mensajes como "Actualizando
+  cambios..." o "Datos sincronizados desde la nube".
+- Si algo está por vencer, aparecerá un aviso naranja (⚠).
+
+¿Qué se guarda en la nube? Tableros, frases, config por perfil y
+grabaciones. Sirve para no perder los datos y usarlos en otro dispositivo.
+
+---------------------------------------------------------------------------
+  3) MODO VISUAL (Color de la app)
+---------------------------------------------------------------------------
+- "Calma": colores suaves (azules/grises), más relajante.
+- "Color": colores vivos y alegres (naranjas y brillantes).
+Este modo aplica a toda la app y se recuerda por perfil.
+
+---------------------------------------------------------------------------
+  4) VOZ Y VELOCIDAD
+---------------------------------------------------------------------------
+- VELOCIDAD: botones "Lenta", "Media" y "Normal" para ajustar lo rápido
+  que habla la voz sintetizada.
+- VOZ: selector donde eliges la voz que usa la app para hablar las frases.
+  Solo aparecen las voces disponibles en tu dispositivo (sistema y
+  navegador). Elige la que mejor entienda el niño.
+
+---------------------------------------------------------------------------
+  5) MODO TERAPEUTA / LOGOPEDA (🔒 con PIN)
+---------------------------------------------------------------------------
+Esta es la parte del profesional (logopeda/terapeuta). Permite editar
+tableros y generar reportes.
+
+CÓMO ENTRAR:
+  - Pulsa "Entrar con PIN".
+  - La primera vez te pedirá CREAR un PIN (mínimo 4 caracteres) y
+    confirmarlo.
+  - Después, cada vez que quieras entrar pedirá ese PIN.
+  - Si olvidaste el PIN: pulsa "Olvidaste el PIN? Restablecer" (requiere
+    confirmación) para crear uno nuevo.
+  - Para salir: pulsa "Salir del modo terapeuta".
+
+UNA VEZ DENTRO, podrás:
+  - Editar tu nombre (logopeda), número de colegiado y observaciones.
+  - Cambiar tu PIN.
+  - En Tableros: renombrar tableros, agregar/editar/borrar celdas, crear
+    subtableros, agregar accesos y asignar fotos reales.
+  - En Frases: la voz que grabes se marca como del terapeuta.
+  - En la pestaña LOGOPEDA (nueva, solo visible con el modo activo): ver
+    el REGISTRO DE SESIÓN y generar reportes (ver parte 6).
+
+---------------------------------------------------------------------------
+  6) REGISTRO DE SESIÓN Y REPORTES (solo modo terapeuta)
+---------------------------------------------------------------------------
+Con el modo terapeuta activo aparece en el menú inferior una pestaña nueva
+"LOGOPEDA" (a la derecha de Ajustes). Al pulsarla se abre la vista del
+registro de sesión, amplia y cómoda. La app registra automáticamente cada
+vez que se pulsa "Hablar" (cada frase comunicada).
+
+- FILTRO POR RANGO: botones "Hoy", "7 días", "30 días", "Todo" y
+  "Personalizado" (eligiendo dos fechas).
+- MÉTRICAS: se muestran 3 cifras:
+    * Frases visibles  : cuántas frases hay en el período elegido.
+    * Frases únicas    : cuántas frases DIFERENTES se dijeron.
+    * Vocabulario activo: cuántas palabras distintas en total.
+- RESUMEN: un texto te dice quién, en qué período, cuántas frases comunicó
+  y cuáles fueron las 3 más usadas.
+- "Descargar PDF": genera un reporte de sesión en PDF (con nombre,
+  colegiado y observaciones del logopeda si los llenaste).
+- "Borrar período" / "Borrar todo": elimina el registro del rango
+  seleccionado (⚠ pide confirmación y NO se puede deshacer).
+
+USO TÍPICO DEL LOGOPEDA:
+1. Entrar con PIN en Ajustes (se abre automáticamente la pestaña LOGOPEDA).
+2. En Tableros, personalizar tableros y pictogramas del niño.
+3. En la pestaña LOGOPEDA, ver las cifras del período (Hoy / 7 días / 30).
+4. Descargar el PDF del reporte para el seguimiento clínico.
+
+===========================================================================
+  CONSEJO FINAL DE SEGURIDAD
+===========================================================================
+- No compartas tu PIN con nadie; protege los ajustes del niño.
+- La sesión de nube se cierra sola tras 10 minutos sin usar la app.
+- Los datos se guardan por perfil y se sincronizan con tu cuenta: cierra
+  sesión al prestar el dispositivo si quieres mantener la privacidad.
+
+===========================================================================

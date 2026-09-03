@@ -1,0 +1,69 @@
+===========================================================================
+  MI COMUNICADOR - MANUAL DE USUARIO
+  Sección: TABLEROS (📋)
+===========================================================================
+
+---------------------------------------------------------------------------
+  ¿PARA QUÉ SIRVE ESTA SECCIÓN?
+---------------------------------------------------------------------------
+Los Tableros son el lugar principal para comunicarse. Contienen los
+pictogramas organizados por categorías (por ejemplo: alimentos, acciones,
+lugares, emociones...). Tocar un pictograma lo agrega a tu frase.
+
+---------------------------------------------------------------------------
+  LISTO DE TABLEROS (lado izquierdo / "Navegación")
+---------------------------------------------------------------------------
+Al entrar ves una lista de tableros disponibles. Toca el nombre de un
+tablero para abrirlo y ver sus pictogramas.
+
+- El tablero abierto se muestra resaltado.
+- Para volver al tablero anterior hay un botón "Volver" arriba (solo si
+  has entrado desde otro tablero).
+
+---------------------------------------------------------------------------
+  DENTRO DE UN TABLERO
+---------------------------------------------------------------------------
+Verás la cuadrícula de pictogramas. Cada pictograma es una tarjeta con un
+dibujo y su palabra.
+
+USUARIO NORMAL (niño o familia):
+  - Tocar un pictograma: lo agrega a la frase Y dice la palabra en voz
+    alta a la vez.
+  - Botón de altavoz (🔊) en una esquina del pictograma: solo dice esa
+    palabra SIN agregarla a la frase. Útil para enseñar vocabulario.
+  - Algunos pictogramas tienen una flecha (➤): son "accesos" que te llevan
+    a otro tablero relacionado al tocarlos.
+
+MODO LOGOPEDA (solo si estás con PIN, ver manual 04-ajustes):
+  - Se muestran botones extra: "Renombrar tablero", "Agregar celda",
+    "Crear subtablero", "Agregar acceso".
+  - Cada pictograma muestra botones "Editar" y "Borrar" para modificarlo.
+  - También permite añadir una foto real a una celda en lugar del icono.
+
+---------------------------------------------------------------------------
+  BÚSQUEDA DE PICTOGRAMAS (arriba, en el buscador)
+---------------------------------------------------------------------------
+En la parte superior hay una barra de búsqueda ("Buscar pictograma").
+
+  - Escribe una palabra y verás los pictogramas que la contienen.
+  - El título cambia a "Resultados (N) para 'lo que buscaste'".
+  - Toca un resultado para agregarlo a tu frase (como en el tablero).
+  - Para volver a la navegación normal, borra el texto del buscador.
+
+Esta búsqueda funciona desde cualquier sección, pero los resultados se
+muestran en la sección de Tableros.
+
+---------------------------------------------------------------------------
+  FLUJO RECOMENDADO PASO A PASO
+---------------------------------------------------------------------------
+1. Entra a la app e inicia sesión.
+2. Ve a la sección Tableros (📋).
+3. Toca un pictograma -> se agrega a la barra de frase abajo.
+4. Sigue tocando más pictogramas para armar tu frase completa.
+5. Cuando estés listo, pulsa "Hablar" (abajo) para que la diga.
+6. Si quieres guardarla para después, pulsa "Guardar".
+
+NOTA: los tableros, sus pictogramas y las celdas editadas por el logopeda
+se guardan por perfil y, si hay sesión activa, también en la nube.
+
+===========================================================================

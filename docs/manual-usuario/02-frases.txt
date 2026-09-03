@@ -1,0 +1,86 @@
+===========================================================================
+  MI COMUNICADOR - MANUAL DE USUARIO
+  Sección: FRASES (💬)
+===========================================================================
+
+---------------------------------------------------------------------------
+  ¿PARA QUÉ SIRVE ESTA SECCIÓN?
+---------------------------------------------------------------------------
+En Frases guardas las frases que usas seguido para poder repetirlas con un
+solo toque. También aquí puedes GRABAR la voz de un familiar para que el
+niño escuche su propia voz en lugar de la voz sintetizada.
+
+---------------------------------------------------------------------------
+  PARTE 1: AYUDA PARA CREAR FRASE
+---------------------------------------------------------------------------
+Arriba de todo verás dos elementos para ayudarte a armar frases:
+
+A) PALABRAS DE CONEXIÓN (botones rápidos)
+   Son palabras como "yo", "quiero", "no", "a", "con", "por favor", etc.
+   Tocar una la agrega directo a tu frase. Son muy útiles para unir
+   pictogramas (ej. "yo quiero ir a ...").
+
+   - En pantalla grande los botones bajan a varias filas; en móvil se
+     deslizan a los lados.
+
+B) ESCRITURA MANUAL
+   Hay un cuadro de texto "Escribe una palabra y agrégala".
+   - Escribe una palabra o incluso una frase completa (hasta 120
+     caracteres) y pulsa "Agregar" (o la tecla Enter).
+   - Se añadirá a tu frase como un único elemento.
+   - Esto sirve, por ejemplo, para escribir palabras que no existen como
+     pictograma.
+
+---------------------------------------------------------------------------
+  PARTE 2: FRASES GUARDADAS (favoritas)
+---------------------------------------------------------------------------
+Cuando armas una frase en la barra inferior y pulsas "Guardar", aparece
+aquí como favorita.
+
+Cada frase favorita muestra un panel con:
+  - El texto de la frase (toda la frase junta, con las palabras en orden).
+  - Un botón "X" (rojo) para ELIMINAR la frase guardada (⚠ no pide
+    confirmación; se borra también su grabación si la tenía).
+
+Dentro del panel hay más botones:
+  - Tocar el texto de la frase: la dice en voz alta (TTS) y la vuelve a
+    poner en la barra de frase por si quieres modificarla.
+  - "+ Agregar": añade todos los pictogramas de esa favorita a la frase
+    actual (para combinarla con otras y hacer una más larga).
+  - "Grabar voz familiar": para grabar tu voz diciendo esa frase (ver
+    PARTE 3).
+  - "Escuchar": reproduce la grabación que guardaste.
+  - "Descargar": descarga la grabación como archivo de audio.
+
+---------------------------------------------------------------------------
+  PARTE 3: GRABAR LA VOZ DE UN FAMILIAR
+---------------------------------------------------------------------------
+El botón "Grabar voz familiar" permite que la frase se diga con TU voz en
+lugar de con la voz del dispositivo.
+
+1. Pulsa "Grabar voz familiar" (o "Volver a grabar" si ya hay una).
+2. La primera vez el navegador te pedirá permiso para usar el micrófono;
+   acepta el permiso.
+3. Habla la frase claramente.
+4. Pulsa "Detener grabación" cuando termines.
+5. Ya quedó guardada: pulsa "Escuchar" para comprobarla.
+
+NOTA IMPORTANTE (privacidad):
+  - La grabación se guarda SOLO en este dispositivo (local) y, si tienes
+    una sesión de nube iniciada, se envía a tu cuenta para que también
+    esté disponible en otros dispositivos tuyos. No se comparte con
+    nadie más.
+  - Si borras la frase favorita, su grabación también se elimina.
+  - Si grabas estando en "modo logopeda", la voz se marca como del
+    terapeuta.
+
+---------------------------------------------------------------------------
+  FLUJO RECOMENDADO PASO A PASO
+---------------------------------------------------------------------------
+1. Arma tu frase en Tableros (o con las palabras de conexión de aquí).
+2. Pulsa "Guardar" en la barra inferior -> aparece en Frases guardadas.
+3. Toca la frase para escucharla, o "+ Agregar" para volver a usarla.
+4. Si quieres tu voz: pulsa "Grabar voz familiar", habla y detén.
+5. Usa "Escuchar" y "Descargar" para reproducir o guardar el audio.
+
+===========================================================================

@@ -7,6 +7,26 @@ const DB_NAME = "comunicador-audio";
 const STORE   = "recordings";
 const DB_VERSION = 1;
 
+export type RecordingOwner = "family" | "therapist";
+
+export type AudioRecord = {
+  blob: Blob;
+  owner: RecordingOwner;
+};
+
+const DEFAULT_RECORDING_OWNER: RecordingOwner = "family";
+
+function isStoredAudioRecord(value: unknown): value is AudioRecord {
+  return Boolean(
+    value &&
+    typeof value === "object" &&
+    "blob" in value &&
+    (value as { blob?: unknown }).blob instanceof Blob &&
+    "owner" in value &&
+    ((value as { owner?: unknown }).owner === "family" || (value as { owner?: unknown }).owner === "therapist")
+  );
+}
+
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
@@ -19,12 +39,12 @@ function openDB(): Promise<IDBDatabase> {
 }
 
 /** Guarda un Blob de audio asociado a un favoriteId. */
-export async function saveAudio(favoriteId: string, blob: Blob): Promise<void> {
+export async function saveAudio(favoriteId: string, blob: Blob, owner: RecordingOwner = DEFAULT_RECORDING_OWNER): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx    = db.transaction(STORE, "readwrite");
     const store = tx.objectStore(STORE);
-    const req   = store.put(blob, favoriteId);
+    const req   = store.put({ blob, owner }, favoriteId);
     req.onsuccess = () => resolve();
     req.onerror   = () => reject(req.error);
   });
@@ -32,12 +52,28 @@ export async function saveAudio(favoriteId: string, blob: Blob): Promise<void> {
 
 /** Devuelve el Blob de audio, o null si no existe. */
 export async function loadAudio(favoriteId: string): Promise<Blob | null> {
+	const record = await loadAudioRecord(favoriteId);
+	return record?.blob ?? null;
+}
+
+/** Devuelve el Blob de audio y su propietario, o null si no existe. */
+export async function loadAudioRecord(favoriteId: string): Promise<AudioRecord | null> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx    = db.transaction(STORE, "readonly");
     const store = tx.objectStore(STORE);
     const req   = store.get(favoriteId);
-    req.onsuccess = () => resolve((req.result as Blob) ?? null);
+		req.onsuccess = () => {
+			if (req.result instanceof Blob) {
+				resolve({ blob: req.result, owner: DEFAULT_RECORDING_OWNER });
+				return;
+			}
+			if (isStoredAudioRecord(req.result)) {
+				resolve(req.result);
+				return;
+			}
+			resolve(null);
+		};
     req.onerror   = () => reject(req.error);
   });
 }

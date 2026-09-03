@@ -1,0 +1,96 @@
+===========================================================================
+  MI COMUNICADOR - MANUAL DE USUARIO
+  Guía general de la aplicación
+===========================================================================
+
+---------------------------------------------------------------------------
+  ¿QUÉ ES ESTA APP?
+---------------------------------------------------------------------------
+Mi Comunicador es una aplicación de Comunicación Aumentativa y Alternativa
+(CAA) pensada para niños y niñas con TEA o dificultades del lenguaje.
+
+En lugar de escribir, el niño toca pictogramas (dibujos) que se van
+uniendo para formar frases, y la app las dice en voz alta (TTS). También
+se puede grabar la voz de un familiar para que el niño la escuche.
+
+---------------------------------------------------------------------------
+  CONCEPTOS CLAVE QUE NECESITAS SABER
+---------------------------------------------------------------------------
+
+1) PICTOGRAMA
+   Dibujo o icono con una palabra debajo (ej. "manzana", "quiero", "ir").
+   Es la pieza básica para comunicarse. Cada tablero está lleno de
+   pictogramas y cada uno tiene una palabra.
+
+2) FRASE (o "sentence")
+   Es una fila de pictogramas que vas juntando en la barra inferior.
+   Cuando la frase está lista, se pulsa "Hablar" y la app la dice en voz
+   alta pegando las palabras de los pictogramas en orden.
+
+3) PERFIL
+   Es una "identidad" del niño dentro de la app. Cada perfil tiene su
+   propio nombre, sus tableros, sus frases favoritas, su modo de color y
+   su velocidad de voz. Puedes tener hasta 3 perfiles en un dispositivo.
+
+4) SECCIÓN (o "tab")
+   La app se divide en 4 secciones, navegables desde el menú inferior:
+     - Tableros  (📋) : los pictogramas organizados por categorías.
+     - Frases    (💬) : frases favoritas y grabaciones de voz.
+     - Rápido    (⚡) : accesos rápidos de uso frecuente.
+     - Ajustes   (⚙️) : perfiles, voz, modo visual, nube y modo logopeda.
+
+5) NUBE / CUENTA
+   Si inicias sesión con un correo, tus datos (tableros, frases,
+   grabaciones) se guardan en la nube y se sincronizan entre dispositivos.
+   Sin conexión a la nube, los datos solo quedan en ese dispositivo.
+
+---------------------------------------------------------------------------
+  CÓMO INICIAR SESIÓN (entrar a la app)
+---------------------------------------------------------------------------
+El inicio de sesión es OBLIGATORIO. Sin una cuenta no se entra a la app.
+
+1) La primera vez, elige "Crear cuenta" y pon un correo y una contraseña
+   (mínimo 8 caracteres, con letras y números).
+2) Las siguientes veces, elige "Iniciar sesión" con tu correo y contraseña.
+3) Al entrar, la app carga tus datos desde la nube (si ya tenías cuenta).
+
+Para salir: pulsa el botón de "cerrar sesión" que está junto al nombre del
+perfil, en la esquina superior derecha. La sesión también se cierra sola
+si estás 10 minutos sin usar la app.
+
+---------------------------------------------------------------------------
+  LA BARRA DE FRASE (parte más importante)
+---------------------------------------------------------------------------
+Debajo de todo, siempre visible, está la barra de frase. Ahí aparece el
+número de pictogramas que llevas unidos ("N pictogramas") y los chips de
+cada pictograma elegido.
+
+Botones de la barra de frase:
+  - [Borrar último] : quita el último pictograma que pusiste.
+  - [Borrar todo]   : vacía la frase completa (⚠ no pide confirmación).
+  - [Hablar]        : dice en voz alta TODA la frase armada.
+  - [Guardar]       : guarda la frase actual como favorita (sección Frases).
+  - [Mostrar/Ocultar menú] : pliega o despliega el menú inferior.
+
+Consejos:
+  - Toca cualquier chip de la frase para que la diga en voz alta.
+  - Toca la "X" de un chip para quitar SOLO ese pictograma.
+  - En tablet/pantalla grande los chips bajan a varias filas para que veas
+    más pictogramas a la vez; en móvil se deslizan a los lados.
+
+---------------------------------------------------------------------------
+  RESUMEN RÁPIDO DE USO
+---------------------------------------------------------------------------
+1. Abre la app e inicia sesión (o crea una cuenta).
+2. Ve a "Tableros" y toca pictogramas para armar una frase.
+3. Pulsa "Hablar" para que la diga.
+4. Pulsa "Guardar" para guardarla y poder repetirla después.
+5. Usa "Frases" para ver tus guardadas y grabar tu voz.
+6. Usa "Ajustes" para cambiar perfil, voz, color y modo logopeda.
+
+Cada sección tiene su propio manual independiente:
+  - 01-tableros.txt : cómo usar los tableros y buscar pictogramas.
+  - 02-frases.txt   : frases favoritas y grabaciones de voz.
+  - 03-rapido.txt   : accesos rápidos.
+  - 04-ajustes.txt  : perfiles, voz, nube y modo logopeda.
+===========================================================================

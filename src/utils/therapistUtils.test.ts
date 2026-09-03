@@ -87,10 +87,6 @@ describe("getRangeLabel", () => {
 const MS_HOUR = 60 * 60 * 1000;
 const MS_DAY = 24 * MS_HOUR;
 
-function makeEntry(offsetMs: number, now: number): SessionEntry {
-	return { phrase: "test", timestamp: now + offsetMs };
-}
-
 describe("filterEntriesByRange", () => {
 	const now = new Date("2026-05-30T12:00:00").getTime();
 

@@ -1,6 +1,6 @@
 ﻿# Pictogramas AAC - Manual Completo de la App
 
-Aplicacion web de Comunicacion Aumentativa y Alternativa (CAA) para ninos y ninas con TEA o dificultades del lenguaje.
+Aplicacion web de Comunicacion Aumentativa y Alternativa (CAA) para niños y niñas con TEA o dificultades del lenguaje.
 
 Este README es una guia tecnica para entender de pies a cabeza como funciona la app: que archivo es, que hace y para que sirve.
 
@@ -14,8 +14,11 @@ La app tiene 2 bloques principales:
 Capas de datos:
 
 1. localStorage: estado de UI y datos serializados por perfil.
+1. sessionStorage: sesion de nube activa (token + usuario), solo mientras la pestana esta abierta.
 1. IndexedDB: blobs de audio local (mas robusto que localStorage para archivos).
 1. MySQL via API Laravel: sincronizacion entre dispositivos.
+
+Ingreso a la app: el login es obligatorio; sin una sesion de nube valida no se accede a la interfaz. Solo se permiten hasta 3 perfiles por dispositivo y cada perfil guarda sus datos en la nube del usuario conectado.
 
 ## 2) Mapa del proyecto (vision rapida)
 
@@ -61,6 +64,13 @@ Capas de datos:
 	- Archivo mas importante del frontend.
 	- Orquesta tabs, frase actual, perfiles, favoritos, modo terapeuta, TTS y grabacion.
 	- Coordina carga/guardado local y sincronizacion cloud.
+	- Login obligatorio como puerta de entrada: sin sesion de nube no se accede a la app.
+	- Sesion con cierre automatico por inactividad (10 min sin interaccion).
+	- Uso de hasta 3 perfiles por dispositivo y sancamiento de entradas de texto (limpieza de `< >` y limites de longitud).
+	- Busqueda de pictogramas desde el header con resaltado de resultados.
+	- Tab "Rapido": acceso rapido y frases rapidas de alta frecuencia.
+	- Modo visual Calma/Color por perfil y velocidad de voz (Lenta/Media/Normal).
+	- Panel clinico: registro de sesion por rango, exportacion de reporte PDF (jsPDF), exportacion por sesion y progreso de vocabulario por perfil.
 
 - `src/boards.ts`
 	- Motor de tableros AAC.
@@ -88,6 +98,7 @@ Capas de datos:
 - `src/utils/cloudApiClient.ts`
 	- Cliente HTTP hacia Laravel.
 	- Maneja login/register/me, token y headers Authorization.
+	- La sesion (token + usuario) se guarda en `sessionStorage`: vive solo mientras la pestana esta abierta; el navegador gestiona el guardado de la contrasena.
 	- Soporta base URL absoluta o rutas relativas `/api/...`.
 
 - `src/utils/cloudSync.ts`
@@ -112,6 +123,9 @@ Capas de datos:
 
 - `src/utils/therapistUtils.test.ts`
 	- Pruebas unitarias de utilidades de terapeuta.
+
+- `src/utils/audioDB.test.ts`
+	- Pruebas unitarias del wrapper de IndexedDB para audio.
 
 ## 4) Backend Laravel archivo por archivo
 
@@ -140,6 +154,7 @@ Capas de datos:
 - `laravel-backend/app/Http/Controllers/Api/V1/AuthController.php`
 	- Registro/login y lectura de usuario autenticado.
 	- Emite tokens con Sanctum.
+	- Seguridad reforzada: contrasena fuerte (8+ caracteres, letras y numeros), limite de cuentas por IP (5 cada 24 h) y bloqueo temporal por intentos de login fallidos (10 por IP cada 15 min).
 
 - `laravel-backend/app/Http/Controllers/Api/V1/StateController.php`
 	- `GET /api/state`: devuelve snapshot de estado del usuario.
@@ -202,17 +217,47 @@ Capas de datos:
 - `supabase/schema.sql`
 	- Esquema alterno para pruebas o migracion futura.
 
+### 5.1 Como se conectan frontend y backend
+
+En este monorepo el frontend y el backend son **dos piezas independientes** que se hablan por HTTP (no comparten proceso ni codigo).
+
+**En desarrollo:**
+
+```
+http://localhost:5173  (Vite / React)
+   └─ peticiones /api/* → proxy de vite.config.ts → http://127.0.0.1:8001 (Laravel)
+```
+
+El navegador carga la app desde Vite y Vite reenvia las llamadas `/api/*` al backend. Por eso en desarrollo ambos servidores deben estar corriendo.
+
+**En produccion:**
+
+```
+https://app.midominio.com      (assets frontend compilados: Nginx/Vercel/Netlify, etc.)
+https://api.midominio.com      (backend Laravel + MySQL en un servidor VPS/PaaS)
+```
+
+Ya no hay proxy: el frontend llama **directo** a la URL publica del backend. Para que funcione hace falta:
+
+1. `VITE_API_BASE_URL` con la URL publica del backend (hoy vacia en `.env`; hay que rellenarla y reconstruir `dist/`).
+2. CORS del backend permitiendo el origen real del frontend (hoy solo acepta `http://localhost:5173` / `4174` en `laravel-backend/config/cors.php`).
+3. HTTPS en ambos (los navegadores bloquean audio/TTS y requests no seguros fuera de localhost).
+
+> El deploy es basicamente: subir el backend a un servidor con PHP 8 + MySQL, subir `dist/` a un hosting estatico, y rellenar `VITE_API_BASE_URL` + CORS. El hosting concreto aun no esta decidido.
+
 ## 6) Flujo end-to-end (como viajan los datos)
 
 ### 6.1 Flujo funcional
 
-1. Usuario interactua en `src/App.tsx` (tableros, frase, favoritos, grabaciones).
+1. Usuario abre la app y debe iniciar sesion en la nube (login obligatorio como puerta de entrada).
+1. Interactua en `src/App.tsx` (tableros, frase, favoritos, grabaciones).
 1. Estado funcional se guarda en localStorage con claves controladas.
 1. Audio se guarda en IndexedDB via `src/utils/audioDB.ts`.
-1. Si hay sesion cloud (token), `src/utils/cloudSync.ts` sincroniza estado y audios.
+1. Con sesion cloud activa, `src/utils/cloudSync.ts` sincroniza estado y audios.
 1. `src/utils/cloudApiClient.ts` llama endpoints Laravel con Bearer token.
 1. Laravel escribe en MySQL tablas `app_user_state` y `audio_recordings`.
 1. En otro dispositivo, login + carga remota restauran estado y grabaciones.
+1. La sesion se cierra al cerrar la pestana/navegador o tras 10 min de inactividad.
 
 ### 6.2 Claves locales sincronizables
 
@@ -248,8 +293,17 @@ composer install
 cp .env.example .env
 php artisan key:generate
 php artisan migrate
-php artisan serve --host=127.0.0.1 --port=8001
 ```
+
+Para levantar el servidor se recomienda el servidor integrado de PHP en **http://127.0.0.1:8001** (mismo puerto que usa el proxy del frontend):
+
+```bash
+php -S 127.0.0.1:8001 -t public public/index.php
+```
+
+> Nota: se usa `php -S` en lugar de `php artisan serve` porque `artisan serve` lanza un proceso hijo que puede quedar huerfano y dejar el puerto 8001 ocupado (causando "Failed to listen"). `php -S` es un solo proceso, se detiene limpio con Ctrl+C.
+>
+> Si 8001 ya esta ocupado, liberalo antes: `netstat -ano | findstr :8001` y mata el PID que aparezca en LISTENING con `taskkill /F /PID <PID>`.
 
 ### 7.3 Con Docker Compose (si aplica)
 
@@ -288,10 +342,13 @@ docker compose up --build
 ## 9) Riesgos comunes (y como evitarlos)
 
 - Audio en localStorage: no hacerlo, usar IndexedDB (`src/utils/audioDB.ts`).
-- Token ausente o vencido: revisar `cloud-token` y login.
+- Token ausente o vencido: la sesion vive en `sessionStorage` (se borra al cerrar pestana/navegador o por inactividad de 10 min); revisar login y el backend encendido en `127.0.0.1:8001`.
 - CORS/API inaccesible: validar URL base, puertos y backend encendido.
 - Divergencia entre perfiles y tableros: validar grafo y claves por perfil.
 - Archivos de audio muy grandes: considerar limpieza o politica de retencion.
+- Abuso de registro/login: el backend limita cuentas por IP y bloquea intentos fallidos.
+- Perfiles ilimitados: la app limita a 3 perfiles por dispositivo.
+- Entradas de texto: se sanea (`< >` y longitud) en perfiles, frases personalizadas y campos del logopeda; no usar `dangerouslySetInnerHTML`.
 
 ## 10) Checklist para entender la app rapido
 
@@ -304,6 +361,8 @@ docker compose up --build
 ## 11) Checklist antes de subir cambios
 
 1. `npm run build` sin errores.
+1. Login obligatorio y pantalla de acceso funcionando (sin sesion no se entra).
+1. Cierre por inactividad (10 min) y cierre al cambiar de usuario.
 1. Login cloud y carga inicial remota funcionando.
 1. Guardado de estado (`PUT /api/state`) correcto.
 1. Guardado y lectura de grabacion (`PUT/GET /api/recordings/...`) correcto.

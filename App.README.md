@@ -11,6 +11,9 @@ App.tsx concentra:
 1. Logica de voz (TTS) y grabacion (MediaRecorder).
 1. Navegacion de tableros AAC y navegacion por tabs de UI.
 1. Restricciones por modo terapeuta.
+1. Puerta de acceso (login obligatorio): sin sesion de nube valida no se muestra la interfaz.
+1. Sesion con cierre por inactividad (10 min) y cierre manual para cambiar de usuario.
+1. Sanitizado de entradas de texto y limite de 3 perfiles por dispositivo.
 
 ## 2) Modelo mental de la interfaz
 
@@ -57,12 +60,22 @@ Favoritos y audio:
 - mediaRecorderRef / mediaStreamRef / audioChunksRef
 - sincronizacion opcional con API MySQL por usuario
 - ruta SaaS recomendada: Laravel backend en carpeta laravel-backend/
+- conexion en desarrollo: proxy de Vite reenvia /api/* desde 5173 a http://127.0.0.1:8001; en produccion el frontend llama directo a VITE_API_BASE_URL (ver README.md, seccion 5.1)
 
 Seguridad y operacion:
 
 - isTherapistMode
 - sessionLog
 - activeTab
+- cloudSession: sesion de nube activa (obligatoria para entrar)
+- cloudEmailInput / cloudPasswordInput / isCloudRegisterMode: credenciales de la puerta de login
+- SESSION_INACTIVITY_MS: 10 min de inactividad cierran la sesion
+
+Constantes de saneamiento de entradas:
+
+- PROFILE_NAME_MAX (20), CUSTOM_WORD_MAX (120)
+- THERAPIST_NAME_MAX (30), THERAPIST_LICENSE_MAX (15), THERAPIST_NOTES_MAX (300)
+- sanitizeInput: elimina `< >` y recorta a la longitud maxima
 
 ## 4) Flujos criticos (end-to-end)
 
@@ -93,9 +106,18 @@ Flujo D: grabar voz para favorito
 3. stop transforma a Blob con mimeType soportado
 4. se guarda en IndexedDB local y, si hay sesion cloud, tambien en MySQL via API
 
+Flujo D0: login obligatorio y sesion
+
+1. al abrir la app, si no hay cloudSession la UI es solo la pantalla de login
+2. "Iniciar sesion" o "Crear cuenta" llama signInWithCloud
+3. la sesion (token + usuario) se guarda en sessionStorage (vive solo en la pestana abierta)
+4. al recargar, si hay sesion valida se valida con /api/auth/me y entra directo
+5. tras 10 min de inactividad (SESSION_INACTIVITY_MS), useEffect cierra sesion (signOutCloud) y vuelve al login
+6. el boton de cerrar sesion en el header permite cambiar de usuario
+
 Flujo D2: acceder desde otro dispositivo
 
-1. el usuario inicia sesion con correo en Ajustes
+1. el usuario inicia sesion (obligatorio) desde la puerta de login
 2. se recupera el snapshot remoto de localStorage
 3. se restauran las grabaciones desde la API/MySQL al almacenamiento local
 4. la app queda lista en el nuevo dispositivo con los mismos datos
@@ -148,10 +170,14 @@ Patron recomendado:
 Checklist de validacion rapida:
 
 1. Build/TS sin errores.
+1. Login obligatorio: sin sesion no se entra a la interfaz.
+1. Inicio de sesion y cierre por inactividad (10 min) funcionan.
 1. Hablar frase funciona.
 1. Guardar/cargar favorito funciona.
 1. Grabar/reproducir audio funciona.
 1. Cambiar perfil no mezcla datos.
+1. Limite de 3 perfiles respetado.
+1. Entradas de texto con longitud limite y sin `< >`.
 1. PIN de terapeuta protege acceso.
 
 ## 7) Recetas practicas de manipulacion
@@ -201,9 +227,10 @@ Agregar telemetria ligera:
 
 ## 9) Regla de oro para este archivo
 
-Si cambias estado global, revisa siempre estos 3 ejes:
+Si cambias estado global, revisa siempre estos ejes:
 
-1. Persistencia (localStorage).
+1. Persistencia (localStorage por perfil).
+1. Sesion cloud (login obligatorio y cierre por inactividad).
 1. Permisos (modo terapeuta).
 1. Layout fijo (top/bottom y responsive).
 
@@ -234,6 +261,13 @@ Bloque B - Rutas funcionales minimas
 - cambiar velocidad
 - cambiar voz
 - entrar/salir de terapeuta
+- iniciar/cerrar sesion cloud (login obligatorio)
+
+1. nube/seguridad:
+
+- login obligatorio como puerta de entrada
+- cierre por inactividad (10 min)
+- limite de 3 perfiles
 
 Bloque C - Persistencia por perfil
 
@@ -269,3 +303,5 @@ Checklist de cierre de semana
 1. Persistencia estable.
 1. Responsive estable.
 1. Permisos de terapeuta coherentes.
+1. Login obligatorio y sesion segura verificados.
+1. Sanitizado de entradas y limite de perfiles respetados.

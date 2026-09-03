@@ -1,6 +1,6 @@
 import "fake-indexeddb/auto";
 import { describe, expect, it } from "vitest";
-import { deleteAudio, loadAudio, saveAudio } from "./audioDB";
+import { deleteAudio, loadAudio, loadAudioRecord, saveAudio } from "./audioDB";
 
 describe("audioDB", () => {
   it("guarda y recupera una grabacion por favoriteId", async () => {
@@ -25,6 +25,18 @@ describe("audioDB", () => {
 
     const loaded = await loadAudio(favoriteId);
     expect(await loaded?.text()).toBe("audio-v2");
+  });
+
+  it("guarda el propietario de la grabacion", async () => {
+    const favoriteId = `fav-${Date.now()}-owner`;
+    const original = new Blob(["audio-therapist"], { type: "audio/webm" });
+
+    await saveAudio(favoriteId, original, "therapist");
+    const loaded = await loadAudioRecord(favoriteId);
+
+    expect(loaded).not.toBeNull();
+    expect(loaded?.owner).toBe("therapist");
+    expect(await loaded?.blob.text()).toBe("audio-therapist");
   });
 
   it("elimina la grabacion", async () => {

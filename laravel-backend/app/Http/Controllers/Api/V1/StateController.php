@@ -26,10 +26,19 @@ class StateController extends Controller
             'payload' => ['required', 'array'],
         ])->validate();
 
+        $payload = $validated['payload'];
+
+        // Límite de tamaño del estado sincronizable (aprox. 2 MB) para evitar
+        // que una cuenta llene la base de datos con estructuras arbitrarias.
+        $size = strlen((string) json_encode($payload, JSON_UNESCAPED_UNICODE));
+        if ($size > 2 * 1024 * 1024) {
+            return response()->json(['error' => 'El estado supera el tamaño permitido'], 413);
+        }
+
         DB::table('app_user_state')->updateOrInsert(
             ['user_id' => $request->user()->id],
             [
-                'payload' => json_encode($validated['payload'], JSON_UNESCAPED_UNICODE),
+                'payload' => json_encode($payload, JSON_UNESCAPED_UNICODE),
                 'updated_at' => now(),
             ]
         );

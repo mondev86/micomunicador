@@ -80,6 +80,18 @@ export const categories: Category[] = [
       { id: 'again', word: 'Otra vez', iconName: 'RefreshCw' },
       { id: 'no_understand', word: 'No entiendo', iconName: 'HelpCircle' },
       { id: 'where_is', word: '¿Dónde está?', iconName: 'MapPin' },
+      { id: 'can', word: 'Puedo', iconName: 'ShieldQuestion' },
+      { id: 'need', word: 'Necesito', iconName: 'LifeBuoy' },
+      { id: 'feel', word: 'Siento', iconName: 'HeartPulse' },
+      { id: 'stop_bad', word: 'Párate', iconName: 'Octagon' },
+      { id: 'all', word: 'Todo / Todos', iconName: 'ListChecks' },
+      { id: 'none', word: 'Nada / No queda', iconName: 'CircleX' },
+      { id: 'first', word: 'Primero', iconName: 'ArrowRight' },
+      { id: 'then_seq', word: 'Luego', iconName: 'CalendarCheck' },
+      { id: 'big', word: 'Grande', iconName: 'Plus' },
+      { id: 'small', word: 'Pequeño', iconName: 'CircleOff' },
+      { id: 'not_yet', word: 'Todavía no', iconName: 'Clock' },
+      { id: 'pause', word: 'Pausa / Un momento', iconName: 'Timer' },
     ]
   },
   {
@@ -181,6 +193,12 @@ export const categories: Category[] = [
       { id: 'soup', word: 'Sopa', iconName: 'Soup' },
       { id: 'vegetables', word: 'Verduras', iconName: 'Salad' },
       { id: 'pasta', word: 'Pasta', iconName: 'UtensilsCrossed' },
+      { id: 'rice', word: 'Arroz', iconName: 'Utensils' },
+      { id: 'chicken', word: 'Pollo', iconName: 'Soup' },
+      { id: 'meat', word: 'Carne', iconName: 'UtensilsCrossed' },
+      { id: 'sandwich', word: 'Emparedado', iconName: 'Croissant' },
+      { id: 'fruit', word: 'Fruta', iconName: 'Apple' },
+      { id: 'yogurt', word: 'Yogur', iconName: 'Milk' },
     ]
   },
   {
@@ -228,6 +246,10 @@ export const categories: Category[] = [
       { id: 'friend', word: 'Amigo', iconName: 'Users' },
       { id: 'teacher', word: 'Maestro', iconName: 'GraduationCap' },
       { id: 'well_done', word: '¡Bien hecho!', iconName: 'Award' },
+      { id: 'me_yo', word: 'Yo', iconName: 'User' },
+      { id: 'you_tu', word: 'Tú', iconName: 'UserRound' },
+      { id: 'mine', word: 'Mío', iconName: 'HandHeart' },
+      { id: 'yours', word: 'Tuyo', iconName: 'HeartHandshake' },
     ]
   },
   {
@@ -235,7 +257,7 @@ export const categories: Category[] = [
     name: 'Colegio',
     color: 'bg-yellow-50 border-yellow-200 text-yellow-700',
     items: [
-      { id: 'sc_raise_hand', word: 'Levantar la mano', iconName: 'Hand' },
+      { id: 'sc_raise_hand', word: 'Levantar la mano', iconName: 'School' },
       { id: 'sc_my_turn', word: 'Es mi turno', iconName: 'Flag' },
       { id: 'sc_silence', word: 'Silencio', iconName: 'VolumeX' },
       { id: 'sc_listen_class', word: 'Escuchar al maestro', iconName: 'Ear' },
@@ -328,6 +350,21 @@ export const categories: Category[] = [
       { id: 'fam_family', word: 'Mi familia', iconName: 'Users' },
       { id: 'fam_pet_dog', word: 'Perro', iconName: 'Dog' },
       { id: 'fam_pet_cat', word: 'Gato', iconName: 'Cat' },
+    ]
+  },
+  {
+    id: 'sensory',
+    name: 'Sensorial',
+    color: 'bg-slate-50 border-slate-200 text-slate-700',
+    items: [
+      { id: 'se_light', word: 'Mucha luz', iconName: 'Sun' },
+      { id: 'se_loud', word: 'Demasiado ruido', iconName: 'VolumeX' },
+      { id: 'se_texture', word: 'Me molesta la textura', iconName: 'Droplets' },
+      { id: 'se_calm_down', word: 'Quiero calma', iconName: 'Leaf' },
+      { id: 'se_quiet', word: 'Silencio, por favor', iconName: 'Wind' },
+      { id: 'se_too_much', word: 'Es demasiado', iconName: 'Zap' },
+      { id: 'se_hug', word: 'Necesito un abrazo', iconName: 'HandHeart' },
+      { id: 'se_move', word: 'Necesito moverme', iconName: 'Footprints' },
     ]
   }
 ];

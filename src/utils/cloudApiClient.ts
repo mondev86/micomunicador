@@ -23,12 +23,12 @@ export function getApiBaseUrl(): string {
 }
 
 export function getCloudToken(): string {
-	return localStorage.getItem(TOKEN_STORAGE_KEY) || "";
+	return sessionStorage.getItem(TOKEN_STORAGE_KEY) || "";
 }
 
 export function getCloudSession(): CloudSession | null {
-	const token = localStorage.getItem(TOKEN_STORAGE_KEY);
-	const rawUser = localStorage.getItem(USER_STORAGE_KEY);
+	const token = sessionStorage.getItem(TOKEN_STORAGE_KEY);
+	const rawUser = sessionStorage.getItem(USER_STORAGE_KEY);
 	if (!token || !rawUser) return null;
 	try {
 		const user = JSON.parse(rawUser) as CloudUser;
@@ -40,13 +40,13 @@ export function getCloudSession(): CloudSession | null {
 }
 
 function persistCloudSession(session: CloudSession): void {
-	localStorage.setItem(TOKEN_STORAGE_KEY, session.token);
-	localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(session.user));
+	sessionStorage.setItem(TOKEN_STORAGE_KEY, session.token);
+	sessionStorage.setItem(USER_STORAGE_KEY, JSON.stringify(session.user));
 }
 
 export function clearCloudSession(): void {
-	localStorage.removeItem(TOKEN_STORAGE_KEY);
-	localStorage.removeItem(USER_STORAGE_KEY);
+	sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+	sessionStorage.removeItem(USER_STORAGE_KEY);
 }
 
 async function requestJson<T>(path: string, init: RequestInit = {}, withAuth = false): Promise<T> {
@@ -102,6 +102,36 @@ export async function cloudMe(): Promise<CloudUser> {
 	const data = await requestJson<{ user: CloudUser }>("/api/auth/me", { method: "GET" }, true);
 	localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(data.user));
 	return data.user;
+}
+
+// Revoca el token en el backend. No lanza si la sesión ya no es válida.
+export async function cloudLogout(): Promise<void> {
+	if (!isApiConfigured()) return;
+	try {
+		await requestJson<{ ok: boolean }>("/api/auth/logout", { method: "POST" }, true);
+	} catch {
+		// Ignora: el borrado local siempre se hace en el llamador.
+	}
+}
+
+export type ExpiringRecording = {
+	profileId: string;
+	favoriteId: string;
+	voiceOwner: string;
+	lastModified: string;
+};
+
+export async function fetchExpiringRecordings(): Promise<{ expired: ExpiringRecording[]; expiring: ExpiringRecording[] }> {
+	if (!isApiConfigured()) return { expired: [], expiring: [] };
+	try {
+		return await requestJson<{ expired: ExpiringRecording[]; expiring: ExpiringRecording[] }>(
+			"/api/recordings/expiring",
+			{ method: "GET" },
+			true
+		);
+	} catch {
+		return { expired: [], expiring: [] };
+	}
 }
 
 export async function cloudFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
