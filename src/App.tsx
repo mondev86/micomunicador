@@ -1,5 +1,5 @@
 ﻿import React, { useState, useEffect, useMemo, useRef } from "react";
-import { Play, Delete, Trash2, Volume2, Search, X, Mic, Square, ChevronRight, ChevronDown, ChevronUp, Download, UserRound, LogOut } from "lucide-react";
+import { Play, Delete, Trash2, Volume2, Search, X, Mic, Square, ChevronRight, ChevronDown, ChevronUp, Download, UserRound, LogOut, Menu } from "lucide-react";
 import { jsPDF } from "jspdf";
 import { categories as originalCategories, Pictogram, iconMap } from "./data/categories";
 import { AacBoardGraph, buildBoardsFromCategories, cloneBoardGraph, isValidBoardGraph } from "./boards";
@@ -1654,6 +1654,22 @@ function App() {
 	const visiblePictograms = normalizedQuery ? allPictograms.filter(pic => normalizeText(pic.word).includes(normalizedQuery)) : [];
 	const isCalm = uiMode === "calma";
 
+	// Vista "Todos los pictogramas": en el tablero Inicio, sin búsqueda activa.
+	const isAllPictogramsView = activeTab === "boards" && !normalizedQuery && activeBoard.id === homeBoardId;
+
+	// En la vista "todos los pictogramas" el menú inferior se colapsa por defecto
+	// (se recupera con el botón "Menú" de la barra superior); al salir de la vista
+	// se restaura expandido para la navegación normal.
+	const wasAllPictogramsView = useRef(isAllPictogramsView);
+	useEffect(() => {
+		if (isAllPictogramsView) {
+			setIsNavCollapsed(true);
+		} else if (wasAllPictogramsView.current) {
+			setIsNavCollapsed(false);
+		}
+		wasAllPictogramsView.current = isAllPictogramsView;
+	}, [isAllPictogramsView]);
+
 	const tabs: { id: "boards" | "phrases" | "quick" | "settings" | "manual" | "therapist"; label: string; icon: string }[] = [
 		{ id: "boards", label: "Tableros", icon: "📋" },
 		{ id: "phrases", label: "Frases", icon: "💬" },
@@ -1804,7 +1820,8 @@ function App() {
 		// Estructura de layout fijo: header + urgencias + contenido + frase + tabs.
 		<div className={`h-dvh flex flex-col overflow-x-hidden text-slate-800 ${isCalm ? "bg-[linear-gradient(180deg,#f7fbff_0%,#f2f8ff_46%,#f8fbff_100%)]" : "bg-[linear-gradient(180deg,#fffaf5_0%,#fff5f0_44%,#f3f9ff_100%)]"}`}>
 			{/* Encabezado principal con nombre de app y perfil activo */}
-			<header className={`fixed left-0 right-0 top-0 z-30 border-b bg-white/95 px-3 shadow-sm backdrop-blur-sm sm:px-4 ${isCalm ? "border-sky-100" : "border-orange-200"}`}>
+			{!isAllPictogramsView && (
+				<header className={`fixed left-0 right-0 top-0 z-30 border-b bg-white/95 px-3 shadow-sm backdrop-blur-sm sm:px-4 ${isCalm ? "border-sky-100" : "border-orange-200"}`}>
 				<div className="flex min-h-14 items-center gap-3">
 					<div className="flex items-center gap-2.5">
 						<span className={`grid h-12 w-12 shrink-0 place-items-center rounded-2xl text-white shadow ${isCalm ? "bg-sky-500" : "bg-orange-500"}`}>
@@ -1855,14 +1872,19 @@ function App() {
 					</div>
 				</div>
 			</header>
+			)}
 
 			{/* Zona principal controlada por pestaña activa */}
-			<main ref={mainScrollRef} className={`flex-1 pt-[102px] sm:pt-[108px] ${isNavCollapsed ? "pb-36 sm:pb-32" : "pb-52 sm:pb-48"} ${activeTab === "boards" ? "overflow-y-auto md:overflow-hidden" : "overflow-y-auto"}`}>
+			<main ref={mainScrollRef} className={`flex-1 ${isAllPictogramsView ? "pt-2 sm:pt-3" : "pt-[102px] sm:pt-[108px]"} ${isAllPictogramsView ? (isNavCollapsed ? "pb-3 sm:pb-4" : "pb-52 sm:pb-48") : isNavCollapsed ? "pb-36 sm:pb-32" : "pb-52 sm:pb-48"} ${activeTab === "boards" ? "overflow-y-auto md:overflow-hidden" : "overflow-y-auto"}`}>
 				{/* Tab de tableros: navegación AAC, búsqueda y edición terapéutica */}
 				{activeTab === "boards" && (
 					<div className="flex min-h-full flex-col md:h-full md:overflow-hidden">
 						<div className="flex flex-col md:min-h-0 md:flex-1 md:flex-row">
-						<div className={`grid grid-cols-2 gap-2 border-b bg-white/90 p-2 sm:p-3 md:w-80 md:flex md:flex-col md:overflow-y-auto md:border-b-0 md:border-r ${isCalm ? "border-sky-100" : "border-orange-200"}`}>
+						<div className={`gap-2 border-b bg-white/90 p-1.5 sm:p-2 md:flex md:flex-col md:border-b-0 md:border-r md:overflow-y-auto ${
+							isAllPictogramsView
+								? "flex flex-nowrap overflow-x-auto md:w-16"
+								: "grid grid-cols-2 md:w-80"
+						} ${isCalm ? "border-sky-100" : "border-orange-200"}`}>
 							{boardOrder.map(boardId => {
 								const board = boardsById[boardId];
 								if (!board) return null;
@@ -1893,7 +1915,13 @@ function App() {
 									<button
 										key={board.id}
 										onClick={() => jumpToBoard(board.id)}
-										className={`flex min-h-11 items-center gap-2 rounded-2xl border-2 px-3 py-2 text-sm font-extrabold transition ${
+										title={board.name}
+										aria-label={board.name}
+										className={`flex shrink-0 min-h-11 items-center gap-2 rounded-2xl border-2 py-2 text-sm font-extrabold transition ${
+											isAllPictogramsView
+												? "w-11 flex-col justify-center gap-0.5 px-0 md:w-auto md:flex-col md:gap-0.5"
+												: "px-3"
+										} ${
 											activeBoard.id === board.id
 												? `${board.colorClass} scale-[1.02] shadow-md`
 												: isCalm
@@ -1901,8 +1929,8 @@ function App() {
 												: "border-orange-200 bg-orange-50 text-orange-900 hover:bg-orange-100"
 										}`}
 									>
-										<BoardIcon size={24} className="shrink-0" />
-										<span className="truncate">{board.name}</span>
+										<BoardIcon size={isAllPictogramsView ? 20 : 24} className="shrink-0" />
+										{!isAllPictogramsView && <span className="truncate">{board.name}</span>}
 									</button>
 								);
 							})}
@@ -1915,11 +1943,11 @@ function App() {
 								</button>
 							)}
 
-							<h2 className="mb-4 text-2xl font-black tracking-tight text-slate-900 md:shrink-0">
-								{normalizedQuery ? `Resultados (${visiblePictograms.length}) para "${searchTerm}"` : `Tablero: ${activeBoard.name}`}
+							<h2 className={`font-black tracking-tight text-slate-900 md:shrink-0 ${isAllPictogramsView ? "mb-2 text-lg" : "mb-4 text-2xl"}`}>
+								{normalizedQuery ? `Resultados (${visiblePictograms.length}) para "${searchTerm}"` : activeBoard.id === homeBoardId ? `Todos los pictogramas` : `Tablero: ${activeBoard.name}`}
 							</h2>
 
-							{isTherapistMode && !normalizedQuery && (
+							{isTherapistMode && !normalizedQuery && activeBoard.id !== homeBoardId && (
 								<div className="mb-4 flex flex-wrap gap-2 md:shrink-0">
 									<button onClick={renameActiveBoard} className="rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-sm font-bold text-slate-700 hover:bg-slate-50">Renombrar tablero</button>
 									<button onClick={addSpeakCellToActiveBoard} className="rounded-xl border border-emerald-300 bg-emerald-100 px-3 py-1.5 text-sm font-bold text-emerald-800 hover:bg-emerald-200">Agregar celda</button>
@@ -1928,51 +1956,93 @@ function App() {
 								</div>
 							)}
 
-							<div className="grid grid-cols-2 gap-2.5 sm:gap-3 sm:grid-cols-3 lg:grid-cols-4 md:min-h-0 md:flex-1 md:overflow-y-auto md:pr-1">
-								{normalizedQuery
-									? visiblePictograms.map(pic => (
-											<PictogramCard key={pic.id} pictogram={pic} color={activeBoard.colorClass} onClick={p => { addToSentence(p); speak(p.word); }} />
-										))
-									: activeBoard.cells.map(cell =>
-											cell.type === "speak" ? (
-												<div key={cell.id} className="relative">
-													<PictogramCard
-														pictogram={{ id: cell.id, word: cell.label, iconName: cell.iconName }}
-														color={activeBoard.colorClass}
-														onClick={() => { addToSentence({ id: cell.id, word: cell.label, iconName: cell.iconName }); speak(cell.label); }}
-													/>
-													<button
-														onClick={e => speakSingle(e, cell.label)}
-														className="absolute right-1.5 top-1.5 z-20 rounded-full border border-slate-200 bg-white p-2 text-slate-600 shadow-sm"
-													>
-														<Volume2 size={18} />
-													</button>
-													{isTherapistMode && (
-														<div className="absolute bottom-2 left-2 right-2 z-10 flex gap-1">
-															<button onClick={e => { e.stopPropagation(); editCell(cell.id); }} className="flex-1 rounded-lg border border-slate-300 bg-white/95 px-2 py-1 text-[11px] font-bold text-slate-700">Editar</button>
-															<button onClick={e => { e.stopPropagation(); removeCell(cell.id); }} className="rounded-lg border border-rose-300 bg-rose-100 px-2 py-1 text-[11px] font-bold text-rose-700">Borrar</button>
-														</div>
-													)}
+							{normalizedQuery ? (
+								<div className="grid grid-cols-2 gap-2.5 sm:gap-3 sm:grid-cols-3 lg:grid-cols-4 md:min-h-0 md:flex-1 md:overflow-y-auto md:pr-1">
+									{visiblePictograms.map(pic => (
+										<PictogramCard key={pic.id} pictogram={pic} color={activeBoard.colorClass} onClick={p => { addToSentence(p); speak(p.word); }} />
+									))}
+								</div>
+							) : activeBoard.id === homeBoardId ? (
+								<div className="md:min-h-0 md:flex-1 md:overflow-y-auto md:pr-1">
+									{boardOrder.filter(catBoardId => catBoardId !== homeBoardId).map(catBoardId => {
+										const catBoard = boardsById[catBoardId];
+										if (!catBoard) return null;
+										const speakCells = catBoard.cells.filter(cell => cell.type === "speak");
+										return (
+											<div key={catBoardId} className="mb-4">
+												<div className={`mb-2 flex items-center gap-2 overflow-hidden rounded-xl px-2 py-1 text-xs font-black uppercase tracking-wide ${catBoard.colorClass}`}>
+													<span className="truncate">{catBoard.name}</span>
+													<span className="ml-auto shrink-0 text-[10px] font-bold opacity-70">{speakCells.length}</span>
 												</div>
-											) : (
+												<div className="grid grid-cols-4 gap-1.5 sm:grid-cols-5 lg:grid-cols-7 xl:grid-cols-9">
+													{speakCells.map(cell => {
+														const CellIcon = iconMap[cell.iconName] ?? iconMap.ArrowRight;
+														return (
+															<div key={cell.id} className="relative">
+																<button
+																	onClick={() => { addToSentence({ id: cell.id, word: cell.label, iconName: cell.iconName }); speak(cell.label); }}
+																	className={`flex aspect-square w-full flex-col items-center justify-center gap-1 rounded-2xl border-2 p-1.5 shadow-sm transition hover:-translate-y-0.5 ${catBoard.colorClass}`}
+																>
+																	<CellIcon size={22} className="shrink-0" />
+																	<span className="text-center text-[10px] font-bold leading-tight">{cell.label}</span>
+																</button>
+																<button
+																	onClick={e => speakSingle(e, cell.label)}
+																	className="absolute right-1 top-1 z-20 rounded-full border border-slate-200 bg-white p-1 text-slate-600 shadow-sm"
+																>
+																	<Volume2 size={12} />
+																</button>
+															</div>
+														);
+													})}
+												</div>
+											</div>
+										);
+									})}
+								</div>
+							) : (
+								<div className="grid grid-cols-2 gap-2.5 sm:gap-3 sm:grid-cols-3 lg:grid-cols-4 md:min-h-0 md:flex-1 md:overflow-y-auto md:pr-1">
+									{activeBoard.cells.map(cell =>
+										cell.type === "speak" ? (
+											<div key={cell.id} className="relative">
+												<PictogramCard
+													pictogram={{ id: cell.id, word: cell.label, iconName: cell.iconName }}
+													color={activeBoard.colorClass}
+													onClick={() => { addToSentence({ id: cell.id, word: cell.label, iconName: cell.iconName }); speak(cell.label); }}
+												/>
 												<button
-													key={cell.id}
-													onClick={() => cell.targetBoardId && openBoard(cell.targetBoardId)}
-													className={`group relative flex min-h-36 flex-col items-center justify-center rounded-3xl border-2 bg-white p-4 text-center shadow-sm transition hover:-translate-y-0.5 ${isCalm ? "border-cyan-100 hover:border-cyan-300" : "border-orange-100 hover:border-orange-300"}`}
+													onClick={e => speakSingle(e, cell.label)}
+													className="absolute right-1.5 top-1.5 z-20 rounded-full border border-slate-200 bg-white p-2 text-slate-600 shadow-sm"
 												>
-													<PictogramIcon name={cell.iconName} className="mb-2" />
-													<span className="text-sm font-extrabold text-slate-800">{cell.label}</span>
-													<ChevronRight className="absolute right-2 top-2 text-cyan-600" size={18} />
-													{isTherapistMode && (
-														<div className="absolute bottom-2 left-2 right-2 z-10 flex gap-1">
-															<button onClick={e => { e.stopPropagation(); editCell(cell.id); }} className="flex-1 rounded-lg border border-slate-300 bg-white/95 px-2 py-1 text-[11px] font-bold text-slate-700">Editar</button>
-															<button onClick={e => { e.stopPropagation(); removeCell(cell.id); }} className="rounded-lg border border-rose-300 bg-rose-100 px-2 py-1 text-[11px] font-bold text-rose-700">Borrar</button>
-														</div>
-													)}
+													<Volume2 size={18} />
 												</button>
-											)
-										)}
-							</div>
+												{isTherapistMode && (
+													<div className="absolute bottom-2 left-2 right-2 z-10 flex gap-1">
+														<button onClick={e => { e.stopPropagation(); editCell(cell.id); }} className="flex-1 rounded-lg border border-slate-300 bg-white/95 px-2 py-1 text-[11px] font-bold text-slate-700">Editar</button>
+														<button onClick={e => { e.stopPropagation(); removeCell(cell.id); }} className="rounded-lg border border-rose-300 bg-rose-100 px-2 py-1 text-[11px] font-bold text-rose-700">Borrar</button>
+													</div>
+												)}
+											</div>
+										) : (
+											<button
+												key={cell.id}
+												onClick={() => cell.targetBoardId && openBoard(cell.targetBoardId)}
+												className={`group relative flex min-h-36 flex-col items-center justify-center rounded-3xl border-2 bg-white p-4 text-center shadow-sm transition hover:-translate-y-0.5 ${isCalm ? "border-cyan-100 hover:border-cyan-300" : "border-orange-100 hover:border-orange-300"}`}
+											>
+												<PictogramIcon name={cell.iconName} className="mb-2" />
+												<span className="text-sm font-extrabold text-slate-800">{cell.label}</span>
+												<ChevronRight className="absolute right-2 top-2 text-cyan-600" size={18} />
+												{isTherapistMode && (
+													<div className="absolute bottom-2 left-2 right-2 z-10 flex gap-1">
+														<button onClick={e => { e.stopPropagation(); editCell(cell.id); }} className="flex-1 rounded-lg border border-slate-300 bg-white/95 px-2 py-1 text-[11px] font-bold text-slate-700">Editar</button>
+														<button onClick={e => { e.stopPropagation(); removeCell(cell.id); }} className="rounded-lg border border-rose-300 bg-rose-100 px-2 py-1 text-[11px] font-bold text-rose-700">Borrar</button>
+													</div>
+												)}
+											</button>
+										)
+									)}
+								</div>
+							)}
 						</div>
 						</div>
 					</div>
@@ -2502,6 +2572,7 @@ function App() {
 			</main>
 
 			{/* Barra inferior fija: construcción de frase, frases rápidas y navegación apiladas */}
+			{!(isAllPictogramsView && isNavCollapsed) && (
 			<div className="fixed bottom-0 left-0 right-0 z-30 flex flex-col items-center justify-center gap-1.5 border-t border-slate-200 bg-white/90 px-2 py-2 backdrop-blur-sm sm:px-3">
 				{/* Voz/sentence bar + acciones: siempre visible */}
 				<div className={`w-2xl border-t bg-white/97 px-2.5 py-2 shadow-md backdrop-blur-sm sm:px-3 ${isCalm ? "border-sky-100" : "border-orange-100"} ${isSentenceSpeaking ? "ring-2 ring-inset ring-emerald-200" : ""}`}>
@@ -2597,6 +2668,7 @@ function App() {
 								<button
 									key={tab.id}
 									onClick={() => setActiveTab(tab.id)}
+									title={tab.label}
 									className={`flex flex-1 flex-col items-center justify-center gap-0.5 transition ${
 										activeTab === tab.id
 											? isCalm
@@ -2613,6 +2685,19 @@ function App() {
 					</nav>
 				)}
 			</div>
+			)}
+
+			{/* Botón flotante: recupera la barra inferior cuando está oculta en la vista "Todos los pictogramas" */}
+			{isAllPictogramsView && isNavCollapsed && (
+				<button
+					onClick={() => setIsNavCollapsed(false)}
+					aria-label="Abrir menú"
+					title="Menú"
+					className={`fixed right-3 top-3 z-40 grid h-12 w-12 place-items-center rounded-2xl border-2 bg-white/95 text-slate-700 shadow-lg backdrop-blur-sm transition hover:bg-slate-50 ${isCalm ? "border-sky-300" : "border-orange-300"}`}
+				>
+					<Menu size={24} strokeWidth={2.5} />
+				</button>
+			)}
 		</div>
 	);
 }

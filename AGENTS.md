@@ -26,7 +26,9 @@ No alterar nada fuera de lo pedido. Reglas fijas, sin excepciones salvo que el u
 
 11. Si tienes dudas sobre qué se quiere, pregunta antes de asumir. Una pregunta corta es mejor que una suposición larga.
 
-12. Stack de referencia: Laravel, PHP 8, Vue 3, Inertia.js, Blade, Tailwind, MySQL, Alpine.js. Base de datos administrada manualmente vía phpMyAdmin, sin migraciones automáticas en producción.
+12. Stack de referencia (corregido): Monorepo con dos partes separadas:
+Frontend: React, TypeScript, Vite — carpeta src/.
+Backend: Laravel, PHP 8, MySQL — carpeta laravel-backend/. Base de datos administrada manualmente vía phpMyAdmin, sin migraciones automáticas en producción. No mezclar convenciones de Vue/Blade/Inertia en el frontend — este proyecto no las usa.
 
 13. Explicación breve del "por qué" de cada decisión clave — máximo 5 líneas por cambio normal, hasta 10 si es algo más complejo.
 
@@ -34,24 +36,23 @@ No alterar nada fuera de lo pedido. Reglas fijas, sin excepciones salvo que el u
 
 ## Reglas de rendimiento y flujo de trabajo (mejoran velocidad y calidad)
 
-14. **Un objetivo por tarea.** Cuando hay varios encargos, sepáralos y revísalos uno a uno con el usuario antes de seguir al siguiente. No acumules cambios sueltos sin confirmar.
+14. Un objetivo por tarea. Cuando hay varios encargos, sepáralos y revísalos uno a uno antes de seguir al siguiente. No acumules cambios sueltos sin confirmar.
 
-15. **Valida al terminar.** Cuando un cambio involucre el frontend, ejecuta `npm run build` (y `npx tsc --noEmit` si aplica) al finalizar para confirmar que compila. Si el proyecto tiene `npm test` (vitest), ejecuta también los tests relacionados con lo que toqué. Reporta el resultado en una línea.
+15. Valida al terminar. En cambios de frontend, ejecuta npm run build (y npx tsc --noEmit si aplica) al finalizar. Si existe npm test (vitest), ejecuta los tests relacionados con lo que se tocó. Reporta el resultado en una línea.
 
-16. **No toques archivos fuera del scope.** Cualquier error de compilación o test detectado en archivos que NO toqué (pre-existente) se reporta aparte, se etiqueta como "pre-existente/fuera de alcance" y NO se corrige sin permiso explícito.
+16. No toques archivos fuera del scope. Cualquier error de compilación o test en archivos NO tocados (pre-existente) se reporta aparte, etiquetado como "pre-existente/fuera de alcance", y no se corrige sin permiso explícito.
 
-17. **Cada cambio se limita a un único archivo salvo que el flujo lo exija.** Si un cambio requiere tocar 3+ archivos, detente, lista los archivos y sus razones, y espera confirmación antes de empezar.
+17. Cada cambio se limita a un único archivo salvo que el flujo lo exija. Si un cambio requiere tocar 3+ archivos, detente, lista los archivos y sus razones, y espera confirmación — excepto el scaffold completo de una sección (migración + modelo + controlador + vista) ya autorizado por la regla 4, que no necesita esta confirmación adicional.
 
-18. **Frontend vs backend.** Este repo es un monorepo: el frontend es React/Vite/TS en `src/`, el backend es Laravel en `laravel-backend/`. Indica siempre en qué parte estoy trabajando y confirma antes de cruzar entre ambas. Las reglas Laravel (5, 6, 12) aplican solo a `laravel-backend/`.
+18. Frontend vs backend. Indica siempre en qué parte se está trabajando (src/ o laravel-backend/) y confirma antes de cruzar entre ambas. Las reglas de Laravel (5, 6, 12) aplican solo a laravel-backend/.
 
-19. **Voz, audio y multimedia.** Como la app usa TTS y grabación (MediaRecorder), cualquier cambio que toque `speakUtils.ts`, `audioDB.ts` o el flujo de grabación debe respetar los tests existentes (`*.test.ts`) — cópialos SIEMPRE.
+19. Voz, audio y multimedia. Cualquier cambio que toque speakUtils.ts, audioDB.ts o el flujo de grabación (MediaRecorder) debe ejecutar los tests existentes de esos archivos antes de darse por terminado, y reportar si alguno falla.
 
-20. **No generes tests no pedidos.** Si no se pide prueba nueva, no crees archivos `.test.ts`. Solo los ejecuto si existe uno relacionado con el cambio.
+20. No generes tests no pedidos. Si no se pide una prueba nueva, no crear archivos .test.ts. Solo ejecutar los que ya existan y estén relacionados con el cambio.
 
-21. **Avísame de problemas detectados, no los arreglo solo.** Si al leer código veo un posible bug, lo describo en 1-2 líneas y sigo con la tarea. El usuario decide si lo aborda.
+21. Sincronización localStorage ↔ backend. Cualquier cambio a la lógica de sincronización debe indicar explícitamente qué pasa en caso de conflicto (dato local más reciente vs. dato de servidor más reciente) — no asumir cuál gana sin decirlo. Un conflicto mal resuelto puede borrar el tablero personalizado de un perfil.
 
-22. **Sé explícito con los "por qué".** Recuerda la regla 13 en cada decisión clave: digo el motivo en máximo 5 líneas y ofrezco alternativa si la hay, sin aplicar nada que contradiga tu petición.
+22. Confirmo el plan antes de implementar en tareas grandes. Si una tarea implica más de ~15 minutos de cambios o tocar secciones nuevas, presenta primero un plan corto (pasos + archivos) y espera el OK antes de modificar nada.
 
-23. **Confirmo el plan antes de implementar en tareas grandes.** Si una tarea implica más de ~15 minutos de cambios o tocar secciones nuevas, presento primero un plan corto (pasos + archivos) y espero tu OK antes de modificar nada.
-
+23. Verificación de backend. Para cambios en laravel-backend/, indicar el comando de validación disponible (config, rutas, tests de Laravel) y no ejecutar nada que suba datos a la BD (se administra vía phpMyAdmin). Nunca sugerir ni ejecutar migrate:fresh, migrate:reset, DROP TABLE, DROP DATABASE ni TRUNCATE sin pedido explícito y confirmación de que es irreversible.
 24. **Verificación de backend.** Para cambios en `laravel-backend/`, indico el comando de validación disponible (p. ej. `php artisan` config, rutas, tests) y no ejecuto nada que suba datos a la BD (la BD se administra vía phpMyAdmin).
