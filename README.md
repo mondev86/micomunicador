@@ -81,7 +81,7 @@ src/
 
 ## Créditos
 
-Pictogramas inspirados en ARASAAC (Creative Commons). Desarrollado con amor para un niño que merece ser escuchado.
+Los pictogramas son iconos de [Lucide](https://lucide.dev/) (licencia ISC). Desarrollado con amor para un niño que merece ser escuchado.
 
 ---
 
