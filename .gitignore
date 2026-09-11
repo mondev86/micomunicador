@@ -29,3 +29,11 @@ Thumbs.db
 *.db
 
 snippet.txt
+
+# archivos internos del desarrollo que no se suben al repo público
+AGENTS.md
+mysql/
+supabase/
+scripts/
+*.cmd
+*.ps1
