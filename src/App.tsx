@@ -204,6 +204,8 @@ function App() {
 	const [expiringNotice, setExpiringNotice] = useState<string>("");
 	const [isCloudHydrating, setIsCloudHydrating] = useState(false);
 	const [isCloudSyncing, setIsCloudSyncing] = useState(false);
+	// Modo demo: permite explorar la app sin cuenta ni backend (persistente).
+	const [isDemoMode, setIsDemoMode] = useState<boolean>(() => localStorage.getItem("demo-mode") === "1");
 	const [storageSanitizationVersion, setStorageSanitizationVersion] = useState(0);
 	// Favoritos y banderas de grabación local por frase.
 	const [favorites, setFavorites] = useState<Favorite[]>([]);
@@ -447,7 +449,7 @@ function App() {
 
 	// Rehidratar sesión cloud guardada y validar token vigente.
 	useEffect(() => {
-		if (!isApiConfigured()) return;
+		if (!isApiConfigured() || isDemoMode) return;
 		const stored = getCloudSession();
 		if (!stored) return;
 		setCloudSession(stored);
@@ -476,7 +478,7 @@ function App() {
 
 	// Sincronización inicial cloud: pull remoto o seed con estado local.
 	useEffect(() => {
-		if (!cloudSession?.user || !isApiConfigured()) return;
+		if (!cloudSession?.user || !isApiConfigured() || isDemoMode) return;
 		let cancelled = false;
 		const hydrateCloud = async () => {
 			setIsCloudHydrating(true);
@@ -537,7 +539,7 @@ function App() {
 
 	// Sincronización incremental con debounce cuando cambian datos locales.
 	useEffect(() => {
-		if (!cloudSession?.user || !isApiConfigured() || isCloudHydrating) return;
+		if (!cloudSession?.user || !isApiConfigured() || isCloudHydrating || isDemoMode) return;
 		const timeout = window.setTimeout(() => {
 			setIsCloudSyncing(true);
 			void saveRemoteStorageSnapshot(cloudSession.user.id, captureSyncableStorageSnapshot())
@@ -550,7 +552,7 @@ function App() {
 	// Recordatorio de descarga: avisa cuando hay grabaciones de voz próximas a
 	// vencer (o ya vencidas) para que el usuario las descargue antes de la purga.
 	useEffect(() => {
-		if (!cloudSession?.user || !isApiConfigured()) {
+		if (!cloudSession?.user || !isApiConfigured() || isDemoMode) {
 			setExpiringNotice("");
 			return;
 		}
@@ -1115,6 +1117,7 @@ function App() {
 	};
 
 	// Logout cloud: revoca el token en el backend y limpia el estado local.
+	// En modo demo, simplemente sale al login sin tocar la red.
 	const signOutCloud = async () => {
 		if (cloudSession?.user) {
 			window.sessionStorage.removeItem(`cloud-hydrated:${cloudSession.user.id}`);
@@ -1123,6 +1126,11 @@ function App() {
 		clearCloudSession();
 		setCloudSession(null);
 		setCloudStatus("Sesión cerrada.");
+		if (isDemoMode) {
+			localStorage.removeItem("demo-mode");
+			setIsDemoMode(false);
+			setCloudStatus("Saliste del modo demo.");
+		}
 	};
 
 	// Cierre de sesión automático por inactividad: si no hay interacción del
@@ -1584,7 +1592,7 @@ function App() {
 
 	// Reintenta sincronizar grabaciones locales hacia la BD remota cuando hay sesión cloud.
 	useEffect(() => {
-		if (!cloudSession?.user || !isApiConfigured() || isCloudHydrating) return;
+		if (!cloudSession?.user || !isApiConfigured() || isCloudHydrating || isDemoMode) return;
 		const timeout = window.setTimeout(() => {
 			void syncLocalRecordingsToRemote(cloudSession.user.id).catch(() => {
 				setCloudStatus("Grabaciones guardadas en local; no se pudo sincronizar con la BD remota.");
@@ -1679,7 +1687,7 @@ function App() {
 		...(isTherapistMode ? [{ id: "therapist" as const, label: "Logopeda", icon: "🔒" }] : []),
 	];
 
-	if (!cloudSession?.user) {
+	if (!cloudSession?.user && !isDemoMode) {
 		// Puerta de acceso: sin sesión no se entra a la app. Diseño dividido:
 		// a la izquierda la descripción y funciones, a la derecha el formulario.
 		// En pantallas pequeñas se apila; en grandes queda lado a lado.
@@ -1781,6 +1789,17 @@ function App() {
 									Crear cuenta
 								</button>
 							</div>
+							<button
+								type="button"
+								onClick={() => {
+									localStorage.setItem("demo-mode", "1");
+									setIsDemoMode(true);
+								}}
+								className="rounded-xl border-2 border-amber-300 bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800 transition hover:bg-amber-100"
+							>
+								Explorar en modo demo
+							</button>
+							<p className="text-center text-xs text-slate-400">Sin necesidad de cuenta: explora la app con datos de ejemplo.</p>
 
 							<input
 								type="email"
@@ -1841,6 +1860,11 @@ function App() {
 						</div>
 					</div>
 					<div className="ml-auto flex items-center gap-2">
+						{isDemoMode && (
+							<span className="rounded-full border-2 border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-black uppercase tracking-wide text-amber-700 shadow-sm">
+								Demo
+							</span>
+						)}
 						<div className={`flex min-h-10 items-center gap-2 rounded-2xl border-2 px-3 py-1.5 shadow-sm ${isCalm ? "border-sky-200 bg-sky-50 text-sky-800" : "border-orange-200 bg-orange-50 text-orange-800"}`}>
 							<UserRound size={18} />
 							<span className="text-xs font-bold sm:text-sm">{activeProfile?.name ?? "Perfil"}</span>
@@ -2239,7 +2263,16 @@ function App() {
 
 						<section className={`rounded-2xl border p-3 sm:p-4 ${isCalm ? "border-slate-200 bg-white" : "border-orange-200 bg-white"}`}>
 							<div className="mb-3 text-xs font-bold uppercase tracking-wide text-slate-500">Nube y acceso</div>
-							{!isApiConfigured() ? (
+							{isDemoMode ? (
+								<div className="mt-3 flex flex-col gap-2">
+									<div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
+										Estás explorando la app en modo demo (datos locales, sin cuenta).
+									</div>
+									<button onClick={() => void signOutCloud()} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">
+										Salir del modo demo
+									</button>
+								</div>
+							) : !isApiConfigured() ? (
 								<p className="mt-3 text-sm text-slate-500">Configura VITE_API_BASE_URL para sincronizar datos entre dispositivos.</p>
 							) : cloudSession ? (
 								<div className="mt-3 flex flex-col gap-2">

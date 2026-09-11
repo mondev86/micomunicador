@@ -43,7 +43,7 @@ npm install
 npm run dev        # http://localhost:5173
 ```
 
-**Nota importante**: la app requiere login obligatorio contra un backend Laravel que no está en este repo por motivos de seguridad. Para ver la interfaz completa sin backend, se puede crear una sesión mock en `src/App.tsx` (buscar `if (!cloudSession?.user)` — la lógica está documentada allí).
+Al abrir la pantalla de acceso, pulsar **"Explorar en modo demo"** para entrar sin cuenta: la app funciona 100% con datos locales (pictogramas, voz TTS, frases favoritas, perfiles, modo logopeda). El modo demo es persistente y se sale con el botón de cerrar sesión.
 
 ---
 
