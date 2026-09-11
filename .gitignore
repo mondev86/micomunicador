@@ -33,7 +33,6 @@ snippet.txt
 # archivos internos del desarrollo que no se suben al repo público
 AGENTS.md
 App.README.md
-README.md
 laravel-backend/
 mysql/
 supabase/
