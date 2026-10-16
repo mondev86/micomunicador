@@ -32,6 +32,7 @@ import {
 	deleteRemoteRecording,
 } from "./utils/cloudSync";
 import { manualSections } from "./manual";
+import { storage } from "./utils/storage";
 
 // Frase favorita guardada por perfil, con estilo visual asociado.
 type Favorite = {
@@ -130,7 +131,7 @@ const pickSupportedRecordingMimeType = (): string | undefined => {
 };
 
 const getStoredText = (key: string): string => {
-	const value = localStorage.getItem(key);
+	const value = storage.getItem(key);
 	if (!value) return "";
 	const trimmed = value.trim();
 	return trimmed === "null" || trimmed === "undefined" ? "" : value;
@@ -159,7 +160,7 @@ function App() {
 	// Estados principales de navegación, perfil, frase y paneles.
 	const [boardHistory, setBoardHistory] = useState<string[]>([homeBoardId]);
 	const [profiles, setProfiles] = useState<ChildProfile[]>(() => {
-		const saved = localStorage.getItem("child-profiles");
+		const saved = storage.getItem("child-profiles");
 		if (!saved) return defaultProfiles;
 		try {
 			const parsed = JSON.parse(saved) as ChildProfile[];
@@ -168,7 +169,7 @@ function App() {
 			return defaultProfiles;
 		}
 	});
-	const [activeProfileId, setActiveProfileId] = useState<string>(() => localStorage.getItem("active-profile-id") || defaultProfiles[0].id);
+	const [activeProfileId, setActiveProfileId] = useState<string>(() => storage.getItem("active-profile-id") || defaultProfiles[0].id);
 	const [searchTerm, setSearchTerm] = useState("");
 	const [sentence, setSentence] = useState<Pictogram[]>([]);
 	const [isSentenceSpeaking, setIsSentenceSpeaking] = useState(false);
@@ -205,7 +206,7 @@ function App() {
 	const [isCloudHydrating, setIsCloudHydrating] = useState(false);
 	const [isCloudSyncing, setIsCloudSyncing] = useState(false);
 	// Modo demo: permite explorar la app sin cuenta ni backend (persistente).
-	const [isDemoMode, setIsDemoMode] = useState<boolean>(() => localStorage.getItem("demo-mode") === "1");
+	const [isDemoMode, setIsDemoMode] = useState<boolean>(() => storage.getItem("demo-mode") === "1");
 	const [storageSanitizationVersion, setStorageSanitizationVersion] = useState(0);
 	// Favoritos y banderas de grabación local por frase.
 	const [favorites, setFavorites] = useState<Favorite[]>([]);
@@ -227,14 +228,14 @@ function App() {
 	const activeBoardId = boardHistory[boardHistory.length - 1] ?? homeBoardId;
 	const activeBoard = boardsById[activeBoardId] ?? boardsById[homeBoardId];
 
-	// Persistir perfiles en localStorage.
+	// Persistir perfiles en storage.
 	useEffect(() => {
-		localStorage.setItem("child-profiles", JSON.stringify(profiles));
+		storage.setItem("child-profiles", JSON.stringify(profiles));
 	}, [profiles]);
 
 	// Persistir perfil activo.
 	useEffect(() => {
-		localStorage.setItem("active-profile-id", activeProfileId);
+		storage.setItem("active-profile-id", activeProfileId);
 	}, [activeProfileId]);
 
 	// Re-lee desde localStorage los datos dependientes del perfil y los aplica
@@ -243,7 +244,7 @@ function App() {
 	// para aplicar los datos SIN necesidad de recargar la página.
 	const hydrateProfileFromStorage = (profile: ChildProfile) => {
 		if (!profile) return;
-		const savedBoards = localStorage.getItem(`boards:${profile.id}`);
+		const savedBoards = storage.getItem(`boards:${profile.id}`);
 		if (savedBoards) {
 			try {
 				const parsed = JSON.parse(savedBoards);
@@ -258,7 +259,7 @@ function App() {
 		setUiMode(profile.uiMode);
 		setSpeechRate(profile.speechRate);
 
-		const savedFavorites = localStorage.getItem(`favorites:${profile.id}`);
+		const savedFavorites = storage.getItem(`favorites:${profile.id}`);
 		if (!savedFavorites) {
 			setFavorites([]);
 		} else {
@@ -270,7 +271,7 @@ function App() {
 			}
 		}
 
-		const savedSessionLog = localStorage.getItem(`session-log:${profile.id}`);
+		const savedSessionLog = storage.getItem(`session-log:${profile.id}`);
 		if (!savedSessionLog) {
 			setSessionLog([]);
 			setSessionLogHydratedProfileId(profile.id);
@@ -306,27 +307,27 @@ function App() {
 	// Guardar tableros del perfil actual.
 	useEffect(() => {
 		if (!activeProfile) return;
-		localStorage.setItem(`boards:${activeProfile.id}`, JSON.stringify(boardGraph));
+		storage.setItem(`boards:${activeProfile.id}`, JSON.stringify(boardGraph));
 	}, [activeProfile, boardGraph]);
 
 	// Guardar log de sesión solo cuando ya se cargó el log base del perfil.
 	useEffect(() => {
 		if (!activeProfile) return;
 		if (sessionLogHydratedProfileId !== activeProfile.id) return;
-		localStorage.setItem(`session-log:${activeProfile.id}`, JSON.stringify(sessionLog));
+		storage.setItem(`session-log:${activeProfile.id}`, JSON.stringify(sessionLog));
 	}, [activeProfile, sessionLog, sessionLogHydratedProfileId]);
 
 	// Persistencia de metadatos del terapeuta.
 	useEffect(() => {
-		localStorage.setItem("therapist-name", therapistName);
+		storage.setItem("therapist-name", therapistName);
 	}, [therapistName]);
 
 	useEffect(() => {
-		localStorage.setItem("therapist-license", therapistLicense);
+		storage.setItem("therapist-license", therapistLicense);
 	}, [therapistLicense]);
 
 	useEffect(() => {
-		localStorage.setItem("therapist-notes", therapistNotes);
+		storage.setItem("therapist-notes", therapistNotes);
 	}, [therapistNotes]);
 
 	// Migración de favoritos de formatos antiguos a formato actual.
@@ -340,7 +341,7 @@ function App() {
 			});
 			setFavorites(normalized);
 			if (activeProfile) {
-				localStorage.setItem(`favorites:${activeProfile.id}`, JSON.stringify(normalized));
+				storage.setItem(`favorites:${activeProfile.id}`, JSON.stringify(normalized));
 			}
 		}
 	}, [favorites, activeProfile, uiMode]);
@@ -433,12 +434,12 @@ function App() {
 
 	// Persistir voz preferida.
 	useEffect(() => {
-		localStorage.setItem("preferred-voice-uri", preferredVoiceURI);
+		storage.setItem("preferred-voice-uri", preferredVoiceURI);
 	}, [preferredVoiceURI]);
 
 	// Persistir correo usado para login cloud.
 	useEffect(() => {
-		localStorage.setItem("cloud-email", cloudEmail);
+		storage.setItem("cloud-email", cloudEmail);
 	}, [cloudEmail]);
 
 	// Limpia valores heredados como null/undefined y fuerza un próximo sync a nube.
@@ -498,7 +499,7 @@ function App() {
 						// (evita el parpadeo tras el login). Se actualizan los perfiles,
 						// el perfil activo y, en consecuencia, tableros/favoritos/log.
 						let nextProfiles: ChildProfile[] = [];
-						const savedProfiles = window.localStorage.getItem("child-profiles");
+						const savedProfiles = storage.getItem("child-profiles");
 						if (savedProfiles) {
 							try {
 								const parsed: unknown = JSON.parse(savedProfiles);
@@ -510,7 +511,7 @@ function App() {
 								// conserva el estado actual de perfiles
 							}
 						}
-						const savedActiveId = window.localStorage.getItem("active-profile-id");
+						const savedActiveId = storage.getItem("active-profile-id");
 						const nextActiveId = savedActiveId || (cloudSession?.user ? cloudSession.user.id : "");
 						if (nextActiveId) setActiveProfileId(nextActiveId);
 						const nextProfile = nextProfiles.find(profile => profile.id === savedActiveId) ?? nextProfiles[0];
@@ -601,7 +602,7 @@ function App() {
 		setFavorites(updated);
 		if (activeProfile) {
 			try {
-				localStorage.setItem(`favorites:${activeProfile.id}`, JSON.stringify(updated));
+				storage.setItem(`favorites:${activeProfile.id}`, JSON.stringify(updated));
 			} catch {
 				// localStorage lleno — los favoritos están en memoria de todas formas
 			}
@@ -739,9 +740,9 @@ function App() {
 		const confirmed = window.confirm(`Eliminar ${activeProfile.name}?`);
 		if (!confirmed) return;
 		const remaining = profiles.filter(profile => profile.id !== activeProfile.id);
-		localStorage.removeItem(`favorites:${activeProfile.id}`);
-		localStorage.removeItem(`boards:${activeProfile.id}`);
-		localStorage.removeItem(`session-log:${activeProfile.id}`);
+		storage.removeItem(`favorites:${activeProfile.id}`);
+		storage.removeItem(`boards:${activeProfile.id}`);
+		storage.removeItem(`session-log:${activeProfile.id}`);
 		setProfiles(remaining);
 		setActiveProfileId(remaining[0].id);
 		setSentence([]);
@@ -815,7 +816,7 @@ function App() {
 
 	const getStoredSessionLog = (profileId: string): SessionEntry[] => {
 		if (activeProfile?.id === profileId) return sessionLog;
-		const saved = localStorage.getItem(`session-log:${profileId}`);
+		const saved = storage.getItem(`session-log:${profileId}`);
 		if (!saved) return [];
 		try {
 			const parsed = JSON.parse(saved);
@@ -1079,7 +1080,7 @@ function App() {
 
 	// Flujos de autenticación local del modo terapeuta.
 	const openTherapistMode = () => {
-		const savedPin = localStorage.getItem(THERAPIST_PIN_STORAGE_KEY);
+		const savedPin = storage.getItem(THERAPIST_PIN_STORAGE_KEY);
 		setPinInput("");
 		setPinError("");
 		setPinStep(savedPin ? "enter" : "new1");
@@ -1127,7 +1128,7 @@ function App() {
 		setCloudSession(null);
 		setCloudStatus("Sesión cerrada.");
 		if (isDemoMode) {
-			localStorage.removeItem("demo-mode");
+			storage.removeItem("demo-mode");
 			setIsDemoMode(false);
 			setCloudStatus("Saliste del modo demo.");
 		}
@@ -1154,7 +1155,7 @@ function App() {
 
 	// Máquina de estados para crear, validar y cambiar PIN.
 	const handlePinSubmit = async () => {
-		const savedPin = localStorage.getItem(THERAPIST_PIN_STORAGE_KEY);
+		const savedPin = storage.getItem(THERAPIST_PIN_STORAGE_KEY);
 		if (pinStep === "new1") {
 			if (pinInput.length < 4) { setPinError("El PIN debe tener al menos 4 caracteres."); return; }
 			setPendingPin(pinInput);
@@ -1165,7 +1166,7 @@ function App() {
 		}
 		if (pinStep === "new2") {
 			if (pinInput !== pendingPin) { setPinError("Los PINs no coinciden. Intenta de nuevo."); setPinInput(""); return; }
-			localStorage.setItem(THERAPIST_PIN_STORAGE_KEY, await hashPin(pinInput));
+			storage.setItem(THERAPIST_PIN_STORAGE_KEY, await hashPin(pinInput));
 			setPinStep("idle");
 			setPinInput("");
 			setPendingPin("");
@@ -1182,7 +1183,7 @@ function App() {
 			} else {
 				// Migración: PIN antiguo en texto plano
 				matches = pinInput === savedPin;
-				if (matches) localStorage.setItem(THERAPIST_PIN_STORAGE_KEY, await hashPin(pinInput));
+				if (matches) storage.setItem(THERAPIST_PIN_STORAGE_KEY, await hashPin(pinInput));
 			}
 			if (!matches) { setPinError("PIN incorrecto."); setPinInput(""); return; }
 			setPinStep("idle");
@@ -1217,7 +1218,7 @@ function App() {
 		}
 		if (pinStep === "change-new2") {
 			if (pinInput !== pendingPin) { setPinError("Los PINs no coinciden."); setPinInput(""); return; }
-			localStorage.setItem(THERAPIST_PIN_STORAGE_KEY, await hashPin(pinInput));
+			storage.setItem(THERAPIST_PIN_STORAGE_KEY, await hashPin(pinInput));
 			setPinStep("idle");
 			setPinInput("");
 			setPendingPin("");
@@ -1236,7 +1237,7 @@ function App() {
 
 	const resetPin = () => {
 		if (!window.confirm("¿Restablecer el PIN? Se borrará el PIN actual y deberás crear uno nuevo.")) return;
-		localStorage.removeItem(THERAPIST_PIN_STORAGE_KEY);
+		storage.removeItem(THERAPIST_PIN_STORAGE_KEY);
 		setPinInput("");
 		setPinError("");
 		setPinStep("new1");
@@ -1792,7 +1793,7 @@ function App() {
 							<button
 								type="button"
 								onClick={() => {
-									localStorage.setItem("demo-mode", "1");
+									storage.setItem("demo-mode", "1");
 									setIsDemoMode(true);
 								}}
 								className="rounded-xl border-2 border-amber-300 bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800 transition hover:bg-amber-100"

@@ -3,9 +3,15 @@
  * Evita el límite de 5 MB de localStorage al guardar blobs de audio.
  */
 
-const DB_NAME = "comunicador-audio";
+import { storage } from "./storage";
+
 const STORE   = "recordings";
 const DB_VERSION = 1;
+
+// En modo demo usa una base de datos aparte para no mezclar grabaciones reales.
+function currentDBName(): string {
+	return storage.getItem("demo-mode") === "1" ? "comunicador-audio-demo" : "comunicador-audio";
+}
 
 export type RecordingOwner = "family" | "therapist";
 
@@ -29,7 +35,7 @@ function isStoredAudioRecord(value: unknown): value is AudioRecord {
 
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    const req = indexedDB.open(currentDBName(), DB_VERSION);
     req.onupgradeneeded = () => {
       req.result.createObjectStore(STORE);
     };
