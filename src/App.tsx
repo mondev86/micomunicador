@@ -1,6 +1,8 @@
 ﻿import React, { useState, useEffect, useMemo, useRef } from "react";
 import { Play, Delete, Trash2, Volume2, Search, X, Mic, Square, ChevronRight, ChevronDown, ChevronUp, Download, UserRound, LogOut, Menu } from "lucide-react";
-import { jsPDF } from "jspdf";
+import { sanitizeInput, randomColorClass, pickSupportedRecordingMimeType, getStoredText } from "./utils/format";
+import { buildSessionGroups, calculatePhraseUsage, calculateWordUsage, countUniqueWords } from "./utils/reportStats";
+import { downloadSessionReportPdf } from "./utils/reportPdf";
 import { categories as originalCategories, Pictogram, iconMap } from "./data/categories";
 import { AacBoardGraph, buildBoardsFromCategories, cloneBoardGraph, isValidBoardGraph } from "./boards";
 import { shouldCancelBeforeSpeak, pickSpanishVoice, buildUtterance, isIOSUserAgent } from "./utils/speakUtils";
@@ -54,18 +56,9 @@ type ChildProfile = {
 	speechRate: number;
 };
 
-// Grupo temporal de frases para exportes clínicos por sesión.
-type SessionGroup = {
-	id: string;
-	start: number;
-	end: number;
-	entries: SessionEntry[];
-};
-
 type UiMode = "calma" | "color";
 
 const THERAPIST_PIN_STORAGE_KEY = "therapist-pin";
-const SESSION_BREAK_MS = 45 * 60 * 1000;
 // Tiempo de inactividad (10 min) tras el cual la sesión se cierra y hay que
 // iniciar sesión de nuevo por seguridad.
 const SESSION_INACTIVITY_MS = 10 * 60 * 1000;
@@ -77,70 +70,11 @@ const THERAPIST_NAME_MAX = 30;
 const THERAPIST_LICENSE_MAX = 15;
 const THERAPIST_NOTES_MAX = 300;
 
-// Recorta y elimina caracteres peligrosos para HTML (< >). React ya escapa el
-// texto al renderizar, pero esto añade una defensa extra y limita el tamaño.
-const sanitizeInput = (value: string, max: number): string => {
-	return value.replace(/[<>]/g, "").slice(0, max);
-};
-
 // Perfil por defecto para primer arranque sin datos previos.
 const defaultProfiles: ChildProfile[] = [
 	{ id: "perfil-1", name: "Ana", uiMode: "calma", speechRate: 0.8 }
 ];
 
-// Paleta aleatoria por modo visual para pintar frases favoritas.
-const randomColorClass = (mode: UiMode = "calma") => {
-	const colors = mode === "calma"
-		? [
-				"bg-amber-50 border-amber-200 text-amber-800",
-				"bg-sky-50 border-sky-200 text-sky-800",
-				"bg-emerald-50 border-emerald-200 text-emerald-800",
-				"bg-rose-50 border-rose-200 text-rose-800",
-				"bg-violet-50 border-violet-200 text-violet-800",
-			]
-		: [
-				"bg-amber-100 border-amber-300 text-amber-900",
-				"bg-cyan-100 border-cyan-300 text-cyan-900",
-				"bg-lime-100 border-lime-300 text-lime-900",
-				"bg-pink-100 border-pink-300 text-pink-900",
-				"bg-orange-100 border-orange-300 text-orange-900",
-			];
-	return colors[Math.floor(Math.random() * colors.length)];
-};
-
-// Formatos de audio candidatos según compatibilidad de navegador.
-const RECORDING_MIME_CANDIDATES = [
-	"audio/webm;codecs=opus",
-	"audio/webm",
-	"audio/mp4;codecs=mp4a.40.2",
-	"audio/mp4",
-	"audio/ogg;codecs=opus",
-	"audio/ogg",
-];
-
-const canBrowserPlayAudioMime = (mimeType: string): boolean => {
-	if (typeof document === "undefined") return false;
-	const audio = document.createElement("audio");
-	const compactType = mimeType.split(";")[0]?.trim() || mimeType;
-	return audio.canPlayType(mimeType) !== "" || audio.canPlayType(compactType) !== "";
-};
-
-// Devuelve el primer mimeType realmente soportado por MediaRecorder.
-const pickSupportedRecordingMimeType = (): string | undefined => {
-	if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") {
-		return undefined;
-	}
-	const preferred = RECORDING_MIME_CANDIDATES.find(type => MediaRecorder.isTypeSupported(type) && canBrowserPlayAudioMime(type));
-	if (preferred) return preferred;
-	return RECORDING_MIME_CANDIDATES.find(type => MediaRecorder.isTypeSupported(type));
-};
-
-const getStoredText = (key: string): string => {
-	const value = storage.getItem(key);
-	if (!value) return "";
-	const trimmed = value.trim();
-	return trimmed === "null" || trimmed === "undefined" ? "" : value;
-};
 
 function App() {
 	// Grafo base de tableros generado desde las categorías seed.
@@ -820,68 +754,11 @@ function App() {
 	// Derivados estadísticos para panel clínico y exportes.
 	const filteredSessionLog = useMemo(() => filterEntriesByRange(sessionLog, reportRange, { customRangeStart, customRangeEnd }), [sessionLog, reportRange, customRangeStart, customRangeEnd]);
 
-	const sessionGroups = useMemo(() => {
-		if (filteredSessionLog.length === 0) return [] as SessionGroup[];
-		const sorted = [...filteredSessionLog].sort((a, b) => a.timestamp - b.timestamp);
-		const groups: SessionGroup[] = [];
-		let current: SessionEntry[] = [];
+	const sessionGroups = useMemo(() => buildSessionGroups(filteredSessionLog), [filteredSessionLog]);
 
-		for (const entry of sorted) {
-			if (current.length === 0) {
-				current.push(entry);
-				continue;
-			}
-			const previous = current[current.length - 1];
-			if (entry.timestamp - previous.timestamp > SESSION_BREAK_MS) {
-				groups.push({
-					id: `session-${current[0].timestamp}`,
-					start: current[0].timestamp,
-					end: current[current.length - 1].timestamp,
-					entries: current,
-				});
-				current = [entry];
-			} else {
-				current.push(entry);
-			}
-		}
+	const phraseUsage = useMemo(() => calculatePhraseUsage(filteredSessionLog), [filteredSessionLog]);
 
-		if (current.length > 0) {
-			groups.push({
-				id: `session-${current[0].timestamp}`,
-				start: current[0].timestamp,
-				end: current[current.length - 1].timestamp,
-				entries: current,
-			});
-		}
-
-		return groups.reverse();
-	}, [filteredSessionLog]);
-
-	const phraseUsage = useMemo(() => {
-		const counts = new Map<string, number>();
-		for (const entry of filteredSessionLog) {
-			const key = entry.phrase.trim();
-			if (!key) continue;
-			counts.set(key, (counts.get(key) ?? 0) + 1);
-		}
-		return [...counts.entries()].sort((a, b) => b[1] - a[1]);
-	}, [filteredSessionLog]);
-
-	const wordUsage = useMemo(() => {
-		const counts = new Map<string, number>();
-		for (const entry of filteredSessionLog) {
-			const cleaned = entry.phrase
-				.toLowerCase()
-				.normalize("NFD")
-				.replace(/[\u0300-\u036f]/g, "")
-				.replace(/[^a-z0-9\s]/g, " ");
-			for (const token of cleaned.split(/\s+/)) {
-				if (!token || token.length < 2) continue;
-				counts.set(token, (counts.get(token) ?? 0) + 1);
-			}
-		}
-		return [...counts.entries()].sort((a, b) => b[1] - a[1]);
-	}, [filteredSessionLog]);
+	const wordUsage = useMemo(() => calculateWordUsage(filteredSessionLog), [filteredSessionLog]);
 
 	const getStoredSessionLog = (profileId: string): SessionEntry[] => {
 		if (activeProfile?.id === profileId) return sessionLog;
@@ -899,228 +776,28 @@ function App() {
 	const profileVocabularyStats = useMemo(() => {
 		return profiles.map(profile => {
 			const log = filterEntriesByRange(getStoredSessionLog(profile.id), reportRange, { customRangeStart, customRangeEnd });
-			const words = new Set<string>();
-			for (const entry of log) {
-				const cleaned = entry.phrase
-					.toLowerCase()
-					.normalize("NFD")
-					.replace(/[\u0300-\u036f]/g, "")
-					.replace(/[^a-z0-9\s]/g, " ");
-				for (const token of cleaned.split(/\s+/)) {
-					if (!token || token.length < 2) continue;
-					words.add(token);
-				}
-			}
 			return {
 				profileId: profile.id,
 				profileName: profile.name,
 				phrasesCount: log.length,
-				activeVocabulary: words.size,
+				activeVocabulary: countUniqueWords(log),
 			};
 		});
 	}, [profiles, activeProfile?.id, sessionLog, reportRange, customRangeStart, customRangeEnd]);
 
-	const calculatePhraseUsage = (entries: SessionEntry[]) => {
-		const counts = new Map<string, number>();
-		for (const entry of entries) {
-			const key = entry.phrase.trim();
-			if (!key) continue;
-			counts.set(key, (counts.get(key) ?? 0) + 1);
-		}
-		return [...counts.entries()].sort((a, b) => b[1] - a[1]);
-	};
-
-	const calculateWordUsage = (entries: SessionEntry[]) => {
-		const counts = new Map<string, number>();
-		for (const entry of entries) {
-			const cleaned = entry.phrase
-				.toLowerCase()
-				.normalize("NFD")
-				.replace(/[\u0300-\u036f]/g, "")
-				.replace(/[^a-z0-9\s]/g, " ");
-			for (const token of cleaned.split(/\s+/)) {
-				if (!token || token.length < 2) continue;
-				counts.set(token, (counts.get(token) ?? 0) + 1);
-			}
-		}
-		return [...counts.entries()].sort((a, b) => b[1] - a[1]);
-	};
-
 	// Genera PDF clínico con resumen, métricas y firma.
 	const downloadSessionPdf = (entries: SessionEntry[] = filteredSessionLog, scopeLabel?: string, filenameSuffix?: string) => {
 		if (!activeProfile) return;
-		if (entries.length === 0) {
-			window.alert("No hay frases en el registro para exportar.");
-			return;
-		}
-
-		const now = new Date();
-		const dateLabel = new Intl.DateTimeFormat("es-ES", { weekday: "long", day: "2-digit", month: "long", year: "numeric" }).format(now);
-		const generatedAt = new Intl.DateTimeFormat("es-ES", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }).format(now);
-		const localPhraseUsage = calculatePhraseUsage(entries);
-		const localWordUsage = calculateWordUsage(entries);
-		const topPhrases = localPhraseUsage.slice(0, 3).map(([phrase]) => phrase);
-		const topWords = localWordUsage.slice(0, 8);
-
-		const doc = new jsPDF({ unit: "pt", format: "a4" });
-		const pageWidth = doc.internal.pageSize.getWidth();
-		const pageHeight = doc.internal.pageSize.getHeight();
-		const marginX = 40;
-		const contentWidth = pageWidth - marginX * 2;
-		const subtleBorder = [226, 232, 240] as const;
-		const bodyText = [15, 23, 42] as const;
-		const mutedText = [71, 85, 105] as const;
-
-		doc.setFillColor(29, 78, 216);
-		doc.rect(0, 0, pageWidth, 98, "F");
-
-		doc.setTextColor(255, 255, 255);
-		doc.setFont("helvetica", "bold");
-		doc.setFontSize(23);
-		doc.text("Mi Comunicador", marginX, 45);
-		doc.setFont("helvetica", "normal");
-		doc.setFontSize(12);
-		doc.text("Reporte clínico de sesión", marginX, 66);
-		doc.setFontSize(9.5);
-		doc.text(`Generado: ${generatedAt}`, marginX, 83);
-
-		doc.setFillColor(247, 249, 252);
-		doc.setDrawColor(...subtleBorder);
-		doc.roundedRect(marginX, 114, contentWidth, 100, 10, 10, "F");
-		doc.roundedRect(marginX, 114, contentWidth, 100, 10, 10, "S");
-		doc.setTextColor(...bodyText);
-		doc.setFont("helvetica", "bold");
-		doc.setFontSize(11.5);
-		doc.text("Resumen de sesión", marginX + 14, 134);
-		doc.setDrawColor(29, 78, 216);
-		doc.line(marginX + 14, 142, marginX + 92, 142);
-		doc.setFont("helvetica", "normal");
-		doc.setFontSize(9.8);
-		doc.text(`Perfil: ${activeProfile.name}`, marginX + 14, 157);
-		doc.text(`Fecha: ${dateLabel}`, marginX + 14, 173);
-		const rangeText = `Rango: ${scopeLabel ?? getRangeLabel(reportRange)}`;
-		doc.text(rangeText, marginX + 14, 189);
-		doc.setFontSize(8.6);
-		doc.setTextColor(...mutedText);
-		const criteriaText = "Criterio de conteo: frases = pulsaciones de Hablar; frases únicas = textos exactos distintos; vocabulario activo = palabras normalizadas únicas.";
-		const criteriaLines = doc.splitTextToSize(criteriaText, contentWidth - 28);
-		doc.text(criteriaLines, marginX + 14, 201);
-
-		const cardTop = 228;
-		const cardGap = 12;
-		const cardWidth = (contentWidth - cardGap * 2) / 3;
-		const drawMetricCard = (index: number, title: string, value: string) => {
-			const x = marginX + index * (cardWidth + cardGap);
-			doc.setFillColor(250, 250, 250);
-			doc.setDrawColor(...subtleBorder);
-			doc.roundedRect(x, cardTop, cardWidth, 74, 8, 8, "F");
-			doc.roundedRect(x, cardTop, cardWidth, 74, 8, 8, "S");
-			doc.setDrawColor(37, 99, 235);
-			doc.line(x + 10, cardTop + 10, x + 44, cardTop + 10);
-			doc.setFont("helvetica", "bold");
-			doc.setFontSize(9.2);
-			doc.setTextColor(...mutedText);
-			doc.text(title.toUpperCase(), x + 12, cardTop + 26);
-			doc.setFont("helvetica", "bold");
-			doc.setFontSize(20);
-			doc.setTextColor(...bodyText);
-			doc.text(value, x + 12, cardTop + 54);
-		};
-
-		drawMetricCard(0, "Frases", String(entries.length));
-		drawMetricCard(1, "Frases únicas", String(localPhraseUsage.length));
-		drawMetricCard(2, "Vocabulario activo", String(localWordUsage.length));
-
-		const summaryY = 322;
-		doc.setFont("helvetica", "bold");
-		doc.setFontSize(11);
-		doc.setTextColor(...bodyText);
-		doc.text("Lectura clínica", marginX, summaryY);
-		doc.setFont("helvetica", "normal");
-		doc.setFontSize(10);
-		const summaryText = `${activeProfile.name} comunicó ${entries.length} frases en el período seleccionado. Frases más usadas:`;
-		const summaryLines = doc.splitTextToSize(summaryText, contentWidth);
-		doc.text(summaryLines, marginX, summaryY + 18);
-		let summaryYOffset = 18 + summaryLines.length * 13 + 8;
-		topPhrases.forEach((phrase, idx) => {
-			const line = `${idx + 1}. ${phrase}`;
-			doc.text(line, marginX + 8, summaryY + summaryYOffset);
-			summaryYOffset += 13;
+		downloadSessionReportPdf({
+			entries,
+			profileName: activeProfile.name,
+			reportRange,
+			scopeLabel,
+			filenameSuffix,
+			therapistName,
+			therapistLicense,
+			therapistNotes,
 		});
-		const totalSummaryLines = summaryLines.length + topPhrases.length;
-		let nextY = summaryY + 18 + totalSummaryLines * 13 + 18;
-		if (therapistNotes.trim()) {
-			doc.setFont("helvetica", "bold");
-			doc.setFontSize(11);
-			doc.setTextColor(...bodyText);
-			doc.text("Observaciones del logopeda", marginX, nextY);
-			doc.setFont("helvetica", "normal");
-			doc.setFontSize(10);
-			const notesLines = doc.splitTextToSize(therapistNotes.trim(), contentWidth);
-			doc.text(notesLines, marginX, nextY + 18);
-			nextY += 18 + notesLines.length * 13 + 14;
-		}
-
-		const sectionY = nextY;
-		doc.setDrawColor(...subtleBorder);
-		doc.line(marginX, sectionY, pageWidth - marginX, sectionY);
-
-		doc.setFont("helvetica", "bold");
-		doc.setFontSize(11);
-		doc.setTextColor(...bodyText);
-		doc.text("Top frases", marginX, sectionY + 24);
-		doc.text("Palabras más usadas", pageWidth / 2 + 8, sectionY + 24);
-
-		doc.setFont("helvetica", "normal");
-		doc.setFontSize(10);
-		let leftY = sectionY + 46;
-		for (const [phrase, count] of localPhraseUsage.slice(0, 10)) {
-			const phraseLines = doc.splitTextToSize(`- ${phrase} (${count})`, contentWidth / 2 - 22);
-			doc.text(phraseLines, marginX, leftY);
-			leftY += phraseLines.length * 13;
-		}
-
-		let rightY = sectionY + 46;
-		for (const [word, count] of topWords) {
-			doc.text(`- ${word} (${count})`, pageWidth / 2 + 8, rightY);
-			rightY += 14;
-		}
-
-		doc.setDrawColor(...subtleBorder);
-		doc.line(pageWidth / 2, sectionY, pageWidth / 2, Math.max(leftY, rightY) - 6);
-
-		const listsBottomY = Math.max(leftY, rightY) + 12;
-		let signatureBlockTop: number;
-		if (listsBottomY + 150 > pageHeight) {
-			doc.addPage();
-			signatureBlockTop = 40;
-		} else {
-			signatureBlockTop = listsBottomY;
-		}
-		doc.setDrawColor(...subtleBorder);
-		doc.line(marginX, signatureBlockTop, pageWidth - marginX, signatureBlockTop);
-
-		doc.setFont("helvetica", "bold");
-		doc.setFontSize(11);
-		doc.setTextColor(...bodyText);
-		doc.text("Validación profesional", marginX, signatureBlockTop + 22);
-
-		doc.setFont("helvetica", "normal");
-		doc.setFontSize(9.8);
-		doc.text(`Logopeda: ${therapistName.trim() || "____________________________"}`, marginX, signatureBlockTop + 40);
-		doc.text(`Colegiado: ${therapistLicense.trim() || "____________________________"}`, marginX, signatureBlockTop + 56);
-		doc.text(`Fecha de firma: ${new Intl.DateTimeFormat("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" }).format(now)}`, pageWidth / 2 + 8, signatureBlockTop + 40);
-		doc.text("Firma", pageWidth / 2 + 8, signatureBlockTop + 56);
-		doc.line(pageWidth / 2 + 48, signatureBlockTop + 58, pageWidth - marginX, signatureBlockTop + 58);
-
-		doc.setFont("helvetica", "italic");
-		doc.setFontSize(8.8);
-		doc.setTextColor(100, 116, 139);
-		doc.text("Mi Comunicador - reporte generado automáticamente para seguimiento terapéutico.", marginX, pageHeight - 20);
-
-		const safeName = activeProfile.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "perfil";
-		const fileDate = now.toISOString().slice(0, 10);
-		doc.save(`reporte-sesion-${safeName}-${filenameSuffix ?? reportRange}-${fileDate}.pdf`);
 	};
 
 	// Ajustes por perfil: tema visual y velocidad de habla.
