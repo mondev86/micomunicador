@@ -30,6 +30,11 @@ import {
 	loadRemoteRecording,
 	upsertRemoteRecording,
 	deleteRemoteRecording,
+	snapshotsEqual,
+	decideSyncAction,
+	readLocalModifiedAt,
+	writeLocalModifiedAt,
+	type StorageSnapshot,
 } from "./utils/cloudSync";
 import { manualSections } from "./manual";
 import { storage } from "./utils/storage";
@@ -220,6 +225,9 @@ function App() {
 	const ttsWarmupDoneRef = useRef(false);
 	const ttsColdStartDoneRef = useRef(false);
 	const mainScrollRef = useRef<HTMLElement | null>(null);
+	// Último snapshot sincronizado con la nube (o baseline local); sirve para no
+	// subir el eco de la hidratación y para detectar ediciones reales.
+	const lastSyncedSnapshotRef = useRef<StorageSnapshot | null>(null);
 	const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
 	const [preferredVoiceURI, setPreferredVoiceURI] = useState<string>(() => getStoredText("preferred-voice-uri"));
 
@@ -477,7 +485,10 @@ function App() {
 		}
 	}, [cloudSession?.user]);
 
-	// Sincronización inicial cloud: pull remoto o seed con estado local.
+	// Sincronización inicial cloud: resuelve el conflicto local vs. remoto por
+	// marca de tiempo (regla 21). Nunca sobrescribe lo local con datos remotos
+	// MÁS VIEJOS; solo baja si el remoto es más reciente (o si no hay local).
+	// La política vive en `decideSyncAction`.
 	useEffect(() => {
 		if (!cloudSession?.user || !isApiConfigured() || isDemoMode) return;
 		let cancelled = false;
@@ -485,14 +496,27 @@ function App() {
 			setIsCloudHydrating(true);
 			try {
 				const reloadMarker = `cloud-hydrated:${cloudSession.user.id}`;
+				const localSnapshot = captureSyncableStorageSnapshot();
 				if (window.sessionStorage.getItem(reloadMarker) === "1") {
+					lastSyncedSnapshotRef.current = localSnapshot;
 					setCloudStatus("Sesión en la nube activa.");
 					return;
 				}
-				const remoteSnapshot = await loadRemoteStorageSnapshot(cloudSession.user.id);
-				if (remoteSnapshot && Object.keys(remoteSnapshot).length > 0) {
-					applySyncableStorageSnapshot(remoteSnapshot);
+				const remote = await loadRemoteStorageSnapshot(cloudSession.user.id);
+				const remoteData = remote?.data ?? {};
+				const action = decideSyncAction({
+					hasLocal: Object.keys(localSnapshot).length > 0,
+					hasRemote: Object.keys(remoteData).length > 0,
+					contentDiffers: !snapshotsEqual(localSnapshot, remoteData),
+					localModifiedAt: readLocalModifiedAt(),
+					remoteUpdatedAt: remote?.updatedAt ?? 0,
+				});
+
+				if (action === "pull") {
+					applySyncableStorageSnapshot(remoteData);
 					await restoreRemoteRecordingsToLocal(cloudSession.user.id);
+					writeLocalModifiedAt(remote?.updatedAt ?? 0);
+					lastSyncedSnapshotRef.current = remoteData;
 					if (!cancelled) {
 						window.sessionStorage.setItem(reloadMarker, "1");
 						// Aplica el snapshot remoto al estado de React SIN recargar la página
@@ -516,15 +540,33 @@ function App() {
 						if (nextActiveId) setActiveProfileId(nextActiveId);
 						const nextProfile = nextProfiles.find(profile => profile.id === savedActiveId) ?? nextProfiles[0];
 						if (nextProfile) hydrateProfileFromStorage(nextProfile);
-						setCloudStatus("Datos sincronizados desde la nube.");
+						setCloudStatus("Datos actualizados desde la nube.");
 					}
 					return;
 				}
-				const localSnapshot = captureSyncableStorageSnapshot();
-				await saveRemoteStorageSnapshot(cloudSession.user.id, localSnapshot);
-				await syncLocalRecordingsToRemote(cloudSession.user.id);
+
+				if (action === "push") {
+					await saveRemoteStorageSnapshot(cloudSession.user.id, localSnapshot);
+					await syncLocalRecordingsToRemote(cloudSession.user.id);
+					writeLocalModifiedAt(Date.now());
+					lastSyncedSnapshotRef.current = localSnapshot;
+					if (!cancelled) {
+						window.sessionStorage.setItem(reloadMarker, "1");
+						setCloudStatus(
+							Object.keys(remoteData).length > 0
+								? "Subimos tus cambios locales más recientes."
+								: "Espacio en la nube creado con los datos actuales."
+						);
+					}
+					return;
+				}
+
+				// "none": local y remoto ya coinciden (o ambos vacíos).
+				lastSyncedSnapshotRef.current = localSnapshot;
+				writeLocalModifiedAt(remote?.updatedAt ?? readLocalModifiedAt());
 				if (!cancelled) {
-					setCloudStatus("Espacio en la nube creado con los datos actuales.");
+					window.sessionStorage.setItem(reloadMarker, "1");
+					setCloudStatus(Object.keys(remoteData).length > 0 ? "Datos sincronizados." : "Sesión en la nube activa.");
 				}
 			} catch {
 				if (!cancelled) setCloudStatus("No se pudo sincronizar con la API cloud.");
@@ -538,12 +580,35 @@ function App() {
 		};
 	}, [cloudSession?.user.id]);
 
-	// Sincronización incremental con debounce cuando cambian datos locales.
+	// Marca localmente cuándo cambian los datos sincronizables, aunque no haya
+	// sesión (ediciones sin conexión). En la primera ejecución solo fija el
+	// baseline y durante la hidratación no hace nada, para no ensuciar la marca
+	// con datos que acaban de bajar de la nube.
+	useEffect(() => {
+		if (!isApiConfigured() || isDemoMode || isCloudHydrating) return;
+		const snapshot = captureSyncableStorageSnapshot();
+		if (lastSyncedSnapshotRef.current === null) {
+			lastSyncedSnapshotRef.current = snapshot;
+			return;
+		}
+		if (snapshotsEqual(snapshot, lastSyncedSnapshotRef.current)) return;
+		writeLocalModifiedAt(Date.now());
+	}, [profiles, activeProfileId, boardGraph, favorites, sessionLog, therapistName, therapistLicense, therapistNotes, preferredVoiceURI, storageSanitizationVersion, isCloudHydrating, isDemoMode]);
+
+	// Sincronización incremental con debounce. Omite el eco de la hidratación:
+	// solo sube si los datos difieren del último snapshot sincronizado.
 	useEffect(() => {
 		if (!cloudSession?.user || !isApiConfigured() || isCloudHydrating || isDemoMode) return;
 		const timeout = window.setTimeout(() => {
+			const snapshot = captureSyncableStorageSnapshot();
+			if (lastSyncedSnapshotRef.current !== null && snapshotsEqual(snapshot, lastSyncedSnapshotRef.current)) return;
+			const updatedAt = Date.now();
 			setIsCloudSyncing(true);
-			void saveRemoteStorageSnapshot(cloudSession.user.id, captureSyncableStorageSnapshot())
+			void saveRemoteStorageSnapshot(cloudSession.user.id, snapshot, updatedAt)
+				.then(() => {
+					writeLocalModifiedAt(updatedAt);
+					lastSyncedSnapshotRef.current = snapshot;
+				})
 				.catch(() => setCloudStatus("No se pudo actualizar la nube."))
 				.finally(() => setIsCloudSyncing(false));
 		}, 900);

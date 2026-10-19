@@ -3,6 +3,11 @@ import { loadAudioRecord, saveAudio, type RecordingOwner } from "./audioDB";
 
 export type StorageSnapshot = Record<string, string>;
 
+export type RemoteSnapshot = {
+	data: StorageSnapshot;
+	updatedAt: number;
+};
+
 export type RemoteRecording = {
 	profileId: string;
 	favoriteId: string;
@@ -24,6 +29,11 @@ const PREFIXES = ["boards:", "favorites:", "session-log:"];
 
 const isSyncableKey = (key: string) => STATIC_KEYS.includes(key) || PREFIXES.some(prefix => key.startsWith(prefix));
 
+// Marca local (no sincronizable: no está en STATIC_KEYS ni en PREFIXES) de la
+// última edición de datos de ESTE dispositivo. Se compara con `updatedAt` del
+// snapshot remoto para decidir quién gana en un conflicto.
+const LOCAL_MODIFIED_KEY = "sync-last-modified";
+
 function normalizeStoredText(value: unknown): string {
 	if (typeof value !== "string") return "";
 	const trimmed = value.trim();
@@ -39,6 +49,64 @@ function normalizeStorageSnapshot(snapshot: unknown): StorageSnapshot {
 		normalized[key] = normalizeStoredText(value);
 	}
 	return normalized;
+}
+
+/** Interpreta el payload remoto. Formato nuevo: { data, updatedAt }.
+ *  Formato legado (snapshot plano, sin hora conocida): updatedAt = 0. */
+export function parseRemoteSnapshot(raw: unknown): RemoteSnapshot {
+	if (raw && typeof raw === "object" && "data" in raw && "updatedAt" in raw) {
+		const candidate = raw as { data: unknown; updatedAt: unknown };
+		const updatedAt = typeof candidate.updatedAt === "number" && Number.isFinite(candidate.updatedAt) ? candidate.updatedAt : 0;
+		return { data: normalizeStorageSnapshot(candidate.data), updatedAt };
+	}
+	return { data: normalizeStorageSnapshot(raw), updatedAt: 0 };
+}
+
+/** Compara dos snapshots por contenido (clave y valor), sin importar el orden. */
+export function snapshotsEqual(a: StorageSnapshot, b: StorageSnapshot): boolean {
+	const aKeys = Object.keys(a).sort();
+	const bKeys = Object.keys(b).sort();
+	if (aKeys.length !== bKeys.length) return false;
+	return aKeys.every((key, index) => key === bKeys[index] && a[key] === b[key]);
+}
+
+export type SyncAction = "push" | "pull" | "none";
+
+/** Resuelve el conflicto entre los datos locales y el snapshot remoto.
+ *  Política explícita (regla 21):
+ *   - Solo el remoto tiene datos → baja (pull).
+ *   - Solo el local tiene datos  → sube (push).
+ *   - Ambos con el mismo contenido → nada.
+ *   - Ambos distintos → gana el de marca de tiempo más nueva; empate o
+ *     desconocido → sube local (el dispositivo en uso es el autoritativo y
+ *     nunca se pisa lo local). */
+export function decideSyncAction(params: {
+	hasLocal: boolean;
+	hasRemote: boolean;
+	contentDiffers: boolean;
+	localModifiedAt: number;
+	remoteUpdatedAt: number;
+}): SyncAction {
+	const { hasLocal, hasRemote, contentDiffers, localModifiedAt, remoteUpdatedAt } = params;
+	if (!hasRemote) return hasLocal ? "push" : "none";
+	if (!hasLocal) return "pull";
+	if (!contentDiffers) return "none";
+	if (localModifiedAt > remoteUpdatedAt) return "push";
+	if (remoteUpdatedAt > localModifiedAt) return "pull";
+	return "push";
+}
+
+/** Marca de tiempo de la última edición local sincronizable (0 si no hay). */
+export function readLocalModifiedAt(): number {
+	if (typeof window === "undefined") return 0;
+	const raw = window.localStorage.getItem(LOCAL_MODIFIED_KEY);
+	const value = raw ? Number(raw) : 0;
+	return Number.isFinite(value) ? value : 0;
+}
+
+export function writeLocalModifiedAt(timestamp: number): void {
+	if (typeof window === "undefined") return;
+	window.localStorage.setItem(LOCAL_MODIFIED_KEY, String(timestamp));
 }
 
 export function captureSyncableStorageSnapshot(): StorageSnapshot {
@@ -86,19 +154,23 @@ export function hasCloudSync(): boolean {
 	return isApiConfigured() && Boolean(getCloudToken());
 }
 
-export async function loadRemoteStorageSnapshot(userId: string): Promise<StorageSnapshot | null> {
+export async function loadRemoteStorageSnapshot(userId: string): Promise<RemoteSnapshot | null> {
 	void userId;
 	if (!hasCloudSync()) return null;
 	const payload = await cloudFetch<{ payload: unknown }>("/api/state", { method: "GET" });
-	return normalizeStorageSnapshot(payload.payload);
+	return parseRemoteSnapshot(payload.payload);
 }
 
-export async function saveRemoteStorageSnapshot(userId: string, snapshot: StorageSnapshot): Promise<void> {
+export async function saveRemoteStorageSnapshot(
+	userId: string,
+	snapshot: StorageSnapshot,
+	updatedAt: number = Date.now()
+): Promise<void> {
 	void userId;
 	if (!hasCloudSync()) return;
 	await cloudFetch<{ ok: boolean }>("/api/state", {
 		method: "PUT",
-		body: JSON.stringify({ payload: snapshot }),
+		body: JSON.stringify({ payload: { data: snapshot, updatedAt } }),
 	});
 }
 
