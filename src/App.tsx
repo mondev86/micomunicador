@@ -652,7 +652,11 @@ function App() {
 			const notAlreadyIncluded = !curatedVoices.some(curated => curated.voiceURI === voice.voiceURI);
 			return isSpanishSpain && looksFemale && notAlreadyIncluded;
 		});
-		return extraFemaleEsEsVoice ? [...curatedVoices, extraFemaleEsEsVoice] : curatedVoices;
+		const curated = extraFemaleEsEsVoice ? [...curatedVoices, extraFemaleEsEsVoice] : curatedVoices;
+		if (curated.length > 0) return curated;
+		// Fallback: si el dispositivo no trae ninguna de las voces curadas,
+		// ofrecer todas las voces en español disponibles para poder elegir una.
+		return availableVoices.filter(voice => voice.lang.toLowerCase().startsWith("es"));
 	}, [availableVoices]);
 
 	// Si la voz guardada ya no existe, seleccionar una válida por defecto.
@@ -2429,7 +2433,7 @@ function App() {
 									))}
 								</select>
 							) : (
-								<p className="text-sm text-slate-500">No se encontraron voces Laura/Pablo/Helena ni una voz femenina es-ES.</p>
+								<p className="text-sm text-slate-500">No se encontraron voces en español en este dispositivo.</p>
 							)}
 						</section>
 
